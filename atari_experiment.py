@@ -42,7 +42,7 @@ flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 flags.DEFINE_integer('test_num_episodes', 10, 'Number of episodes per level.')
 
 # Flags used for distributed training.
-flags.DEFINE_integer('task', -1, 'Task id. Use -1 for local training.')
+flags.DEFINE_integer('task', 0, 'Task id. Use -1 for local training.')
 flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
                   'Job name. Ignored when task is set to -1.')
 
@@ -86,7 +86,6 @@ def create_atari_environment(env_id, seed, is_test=False):
 
   environment = environments.FlowEnvironment(env_proxy.proxy)
   return environment
-
 
 @contextlib.contextmanager
 def pin_global_variables(device):
