@@ -232,7 +232,7 @@ def train(action_set, level_names):
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
     config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters)
-    logdir = os.path.join(FLAGS.logdir, level_name)
+    logdir = os.path.join(FLAGS.logdir, level_names[0])
     with tf.train.MonitoredTrainingSession(
         server.target,
         is_chief=is_learner,
@@ -288,7 +288,7 @@ def train(action_set, level_names):
 
           # Calculate total reward after last X frames
           if total_episode_frames % average_frames == 0:
-            with open("logging-" + level_name + ".txt", "a+") as f:
+            with open("logging-" + level_names[0] + ".txt", "a+") as f:
               f.write("Total frames: %d total_return: %f last %d frames\n" % (num_env_frames_v, total_episode_return, average_frames))
 
             # tf.logging.info('total return %f last %d frames', 
@@ -303,7 +303,7 @@ def train(action_set, level_names):
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
                                                              per_level_cap=100)
             if total_episode_frames % average_frames == 0:
-              with open("actors output-" + level_name + ".txt", "a+") as f:
+              with open("actors output-" + level_names[0] + ".txt", "a+") as f:
                   # f.write("num env frames: %d\n" % num_env_frames_v)
                   f.write("total_return %f last %d frames\n" % (total_episode_return, average_frames))
                   f.write("no cap: %f after %d frames\n" % (no_cap, num_env_frames_v))
@@ -338,7 +338,7 @@ def test(action_set, level_names):
     for level_name in level_names:
       env = create_atari_environment(level_name, seed=1, is_test=True)
       outputs[level_name] = build_actor(agent, env, level_name, action_set)
-    logdir = os.path.join(FLAGS.logdir, level_names)   
+    logdir = os.path.join(FLAGS.logdir, level_names[0])   
     with tf.train.SingularMonitoredSession(
         checkpoint_dir=FLAGS.logdir,
         hooks=[py_process.PyProcessHook()]) as session:
