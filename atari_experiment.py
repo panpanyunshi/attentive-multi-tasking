@@ -231,10 +231,11 @@ def train(action_set, level_names):
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
     config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters)
+    logdir = os.path.join(FLAGS.logdir, level_name)
     with tf.train.MonitoredTrainingSession(
         server.target,
         is_chief=is_learner,
-        checkpoint_dir=FLAGS.logdir,
+        checkpoint_dir=logdir,
         save_checkpoint_secs=600,
         save_summaries_secs=30,
         log_step_count_steps=50000,
@@ -286,8 +287,8 @@ def train(action_set, level_names):
 
           # Calculate total reward after last X frames
           if total_episode_frames % average_frames == 0:
-            with open("logging.txt", "a+") as f:
-              f.write("Total frames:%d total_return: %f last %d frames\n" % (num_env_frames_v, total_episode_return, average_frames))
+            with open("logging-" + level_name + ".txt", "a+") as f:
+              f.write("Total frames: %d total_return: %f last %d frames\n" % (num_env_frames_v, total_episode_return, average_frames))
 
             # tf.logging.info('total return %f last %d frames', 
             #                 total_episode_return, average_frames)
@@ -301,7 +302,7 @@ def train(action_set, level_names):
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
                                                              per_level_cap=100)
             if total_episode_frames % average_frames == 0:
-              with open("multi-actors-output.txt", "a+") as f:
+              with open("actors output-" + level_name + ".txt", "a+") as f:
                   # f.write("num env frames: %d\n" % num_env_frames_v)
                   f.write("total_return %f last %d frames\n" % (total_episode_return, average_frames))
                   f.write("no cap: %f after %d frames\n" % (no_cap, num_env_frames_v))
@@ -336,7 +337,7 @@ def test(action_set, level_names):
     for level_name in level_names:
       env = create_atari_environment(level_name, seed=1, is_test=True)
       outputs[level_name] = build_actor(agent, env, level_name, action_set)
-
+    logdir = os.path.join(FLAGS.logdir, level_names)   
     with tf.train.SingularMonitoredSession(
         checkpoint_dir=FLAGS.logdir,
         hooks=[py_process.PyProcessHook()]) as session:
@@ -363,8 +364,8 @@ def test(action_set, level_names):
 
 
 ATARI_MAPPING = collections.OrderedDict([
-  ('Boxing-v0', 'Boxing-v0')
-    # ('Pong-v0', 'Pong-v0'),
+  # ('Boxing-v0', 'Boxing-v0')
+    ('Pong-v0', 'Pong-v0'),
     # ('Breakout-v0', 'Breakout-v0'),
     # ('Breakout-v0', 'Breakout-v0')
 ])
@@ -381,7 +382,7 @@ boxing_action_values = ('NOOP', 'FIRE', 'UP', 'RIGHT', 'LEFT', 'DOWN', 'UPRIGHT'
 
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
-    action_set = boxing_action_values
+    action_set = pong_action_values
     if FLAGS.mode == 'train':
       train(action_set, ATARI_MAPPING.keys()) 
     else:
