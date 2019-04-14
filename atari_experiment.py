@@ -35,9 +35,9 @@ nest = tf.contrib.framework.nest
 flags = tf.app.flags
 FLAGS = tf.app.flags.FLAGS
 
-directory = os.path.join("/tmp/agent", "Pong-v0")
+# directory = os.path.join("/tmp/agent", "Pong-v0")
 
-flags.DEFINE_string('logdir', directory, 'TensorFlow log directory.')
+flags.DEFINE_string('logdir', 'tmp/agent', 'TensorFlow log directory.')
 flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 
 # Flags used for testing.
