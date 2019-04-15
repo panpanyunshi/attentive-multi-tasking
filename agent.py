@@ -25,14 +25,29 @@ ActorOutput = collections.namedtuple(
 AgentOutput = collections.namedtuple('AgentOutput',
                                      'action policy_logits baseline')
 
-flags.DEFINE_integer('total_environment_frames', int(1e9),
+flags.DEFINE_integer('total_environment_frames', int(2e8),
                      'Total environment frames to train for.')
-flags.DEFINE_integer('num_actors', 1, 'Number of actors.')
-flags.DEFINE_integer('batch_size', 1, 'Batch size for training.')
+flags.DEFINE_integer('num_actors', 27, 'Number of actors.')
+flags.DEFINE_integer('batch_size', 9, 'Batch size for training.')
 flags.DEFINE_integer('unroll_length', 20, 'Unroll length in agent steps.')
 flags.DEFINE_integer('num_action_repeats', 4, 'Number of action repeats.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
 
+# Loss settings.
+flags.DEFINE_float('entropy_cost', 0.01, 'Entropy cost/multiplier.')
+flags.DEFINE_float('baseline_cost', .5, 'Baseline cost/multiplier.')
+flags.DEFINE_float('discounting', .99, 'Discounting factor.')
+#
+flags.DEFINE_enum('reward_clipping', 'abs_one', ['abs_one', 'soft_asymmetric'],
+                   'Reward clipping.')
+
+# Optimizer settings.
+flags.DEFINE_float('learning_rate', 0.0006, 'Learning rate.')
+flags.DEFINE_float('decay', .99, 'RMSProp optimizer decay.')
+flags.DEFINE_float('momentum', 0., 'RMSProp momentum.')
+flags.DEFINE_float('epsilon', .01, 'RMSProp epsilon.')
+
+# Atari environments
 class Agent(snt.RNNCore):
 
     def __init__(self, num_actions):
