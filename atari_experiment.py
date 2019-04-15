@@ -35,6 +35,8 @@ nest = tf.contrib.framework.nest
 flags = tf.app.flags
 FLAGS = tf.app.flags.FLAGS
 
+#python atari_experiment.py --job_name=learner --task=0 --num_actors=27    --level_name=Boxing-v0 --batch_size=9 --entropy_cost=0.01    --learning_rate=0.0006     --total_environment_frames=2000000000 --reward_clipping=abs_one
+
 # directory = os.path.join("/tmp/agent", "Pong-v0")
 
 flags.DEFINE_string('logdir', '/tmp/agent', 'TensorFlow log directory.')
@@ -44,7 +46,7 @@ flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 flags.DEFINE_integer('test_num_episodes', 10, 'Number of episodes per level.')
 
 # Flags used for distributed training.
-flags.DEFINE_integer('task', 0, 'Task id. Use -1 for local training.')
+flags.DEFINE_integer('task', -1, 'Task id. Use -1 for local training.')
 flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
                   'Job name. Ignored when task is set to -1.')
 
@@ -351,8 +353,8 @@ def test(action_set, level_names):
 
 
 ATARI_MAPPING = collections.OrderedDict([
-  # ('Boxing-v0', 'Boxing-v0')
-    ('Pong-v0', 'Pong-v0'),
+  ('Boxing-v0', 'Boxing-v0')
+    # ('Pong-v0', 'Pong-v0'),
     # ('Breakout-v0', 'Breakout-v0'),
     # ('Breakout-v0', 'Breakout-v0')
 ])
@@ -369,7 +371,7 @@ boxing_action_values = ('NOOP', 'FIRE', 'UP', 'RIGHT', 'LEFT', 'DOWN', 'UPRIGHT'
 
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
-    action_set = pong_action_values
+    action_set = boxing_action_values
     if FLAGS.mode == 'train':
       train(action_set, ATARI_MAPPING.keys()) 
     else:

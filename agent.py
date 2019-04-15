@@ -328,11 +328,13 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
       learner_outputs.policy_logits)
 
   # Optimization
+  
   num_env_frames = tf.train.get_global_step()
   learning_rate = tf.train.polynomial_decay(FLAGS.learning_rate, num_env_frames,
                                             FLAGS.total_environment_frames, 0)
   optimizer = tf.train.RMSPropOptimizer(learning_rate, FLAGS.decay,
                                         FLAGS.momentum, FLAGS.epsilon)
+  print("total loss is: ", total_loss)
   train_op = optimizer.minimize(total_loss)
 
   # Merge updating the network and environment frames into a single tensor.
