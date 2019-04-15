@@ -87,7 +87,6 @@ class Agent(snt.RNNCore):
     def _torso(self, input_):
         last_action, env_output = input_
         reward, _, _, frame = env_output
-        # print("Instruction is: ", instruction)
 
         # Convert to floats.
         frame = tf.to_float(frame)
@@ -125,8 +124,6 @@ class Agent(snt.RNNCore):
         clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
 
         one_hot_last_action = tf.one_hot(last_action, self._num_actions)
-        # print("Clipped reward shape: ", tf.shape(clipped_reward))
-        # print("One hot shape: ", tf.shape(one_hot_last_action))
         output = tf.concat([conv_out, clipped_reward, one_hot_last_action], axis=1)
         return output 
 
@@ -140,11 +137,7 @@ class Agent(snt.RNNCore):
         new_action = tf.multinomial(policy_logits, num_samples=1,
                                     output_dtype=tf.int32)
 
-        # sess = tf.InteractiveSession()
-
         new_action = tf.squeeze(new_action, 1, name='new_action')
-        # tf.print(new_action, [new_action], message="this is after squeezing")
-
 
         return AgentOutput(new_action, policy_logits, baseline)
 
@@ -187,10 +180,7 @@ def build_actor(agent, env, level_name, action_set):
   """Builds the actor loop."""
   # Initial values.
   initial_env_output, initial_env_state = env.initial()
-  # print("initial env output: ", initial_env_output)
-  # print("initial env state: ", initial_env_state)
   initial_agent_state = agent.initial_state(1)
-  # print("initial agent state: ", initial_agent_state)
   initial_action = tf.zeros([1], dtype=tf.int32)
   dummy_agent_output, _ = agent(
       (initial_action,
@@ -305,12 +295,12 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
       lambda t: t[1:], env_outputs)
   learner_outputs = nest.map_structure(lambda t: t[:-1], learner_outputs)
 
-  # if FLAGS.reward_clipping == 'abs_one':
-  #   clipped_rewards = tf.clip_by_value(rewards, -1, 1)
-  # elif FLAGS.reward_clipping == 'soft_asymmetric':
-  #   squeezed = tf.tanh(rewards / 5.0)
-  #   # Negative rewards are given less weight than positive rewards.
-  #   clipped_rewards = tf.where(rewards < 0, .3 * squeezed, squeezed) * 5.
+  if FLAGS.reward_clipping == 'abs_one':
+    clipped_rewards = tf.clip_by_value(rewards, -1, 1)
+  elif FLAGS.reward_clipping == 'soft_asymmetric':
+    squeezed = tf.tanh(rewards / 5.0)
+    # Negative rewards are given less weight than positive rewards.
+    clipped_rewards = tf.where(rewards < 0, .3 * squeezed, squeezed) * 5.
 
   discounts = tf.to_float(~done) * FLAGS.discounting
 
@@ -354,6 +344,5 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   tf.summary.scalar('learning_rate', learning_rate)
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
-  print("(atari_experiment.py) done: ", done)
-  print("(atari_experiment.py) infos: ", done)
+
   return done, infos, num_env_frames_and_train
