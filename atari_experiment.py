@@ -37,7 +37,7 @@ FLAGS = tf.app.flags.FLAGS
 
 # directory = os.path.join("/tmp/agent", "Pong-v0")
 
-flags.DEFINE_string('logdir', 'tmp/agent', 'TensorFlow log directory.')
+flags.DEFINE_string('logdir', '/tmp/agent', 'TensorFlow log directory.')
 flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 
 # Flags used for testing.
@@ -52,8 +52,9 @@ flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
 flags.DEFINE_float('entropy_cost', 0.01, 'Entropy cost/multiplier.')
 flags.DEFINE_float('baseline_cost', .5, 'Baseline cost/multiplier.')
 flags.DEFINE_float('discounting', .99, 'Discounting factor.')
-# flags.DEFINE_enum('reward_clipping', 'abs_one', ['abs_one', 'soft_asymmetric'],
-#                   'Reward clipping.')
+#
+flags.DEFINE_enum('reward_clipping', 'abs_one', ['abs_one', 'soft_asymmetric'],
+                   'Reward clipping.')
 
 # Optimizer settings.
 flags.DEFINE_float('learning_rate', 0.0006, 'Learning rate.')
