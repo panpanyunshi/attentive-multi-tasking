@@ -160,7 +160,7 @@ class PyProcessAtari(object):
 
     def step(self, action):
       obs, reward, is_done, _ = self._env.step(action)
-      self._env.render()
+#      self._env.render()
       done = np.array(is_done)
       reward = np.float32(reward)
       
