@@ -40,14 +40,14 @@ HUMAN_SCORES_ATARI = {
   'Boxing-v0': 12.1,
   # 'Pong-v0': 14.6,
   # 'Qbert-v0': 13455.0,
-  # 'Seaquest-v0': 42054.7,
+  # 'Seaquest-v0': 42054.7,``
   # 'SpaceInvaders-v0': 1668.7,
 }
 
 RANDOM_SCORES_ATARI = {
   # 'BeamRider-v0': 0.5,
   # 'Breakout-v0': 1.0,
-    'Boxing-v0': 0.5,
+    'Boxing-v0': -1.5,
   # 'Pong-v0': 1.2,
   # 'Qbert-v0': 232.0,
   # 'Seaquest-v0': 101.0,
