@@ -353,8 +353,8 @@ def test(action_set, level_names):
 
 
 ATARI_MAPPING = collections.OrderedDict([
-  ('Boxing-v0', 'Boxing-v0')
-    # ('Pong-v0', 'Pong-v0'),
+#  ('Boxing-v0', 'Boxing-v0')
+     ('Pong-v0', 'Pong-v0'),
     # ('Breakout-v0', 'Breakout-v0'),
     # ('Breakout-v0', 'Breakout-v0')
 ])
@@ -371,7 +371,7 @@ boxing_action_values = ('NOOP', 'FIRE', 'UP', 'RIGHT', 'LEFT', 'DOWN', 'UPRIGHT'
 
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
-    action_set = boxing_action_values
+    action_set = pong_action_values
     if FLAGS.mode == 'train':
       train(action_set, ATARI_MAPPING.keys()) 
     else:
