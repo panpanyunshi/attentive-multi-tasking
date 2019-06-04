@@ -32,7 +32,7 @@ nest = tf.contrib.framework.nest
 flags = tf.app.flags
 FLAGS = tf.app.flags.FLAGS
 
-flags.DEFINE_string('logdir', 'popart-multi', 'TensorFlow log directory.')
+flags.DEFINE_string('logdir', '/tmp/atari-popart/', 'TensorFlow log directory.')
 flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 
 # Flags used for testing.
@@ -535,7 +535,6 @@ def train(action_set, level_names):
               (data_from_actors.level_name,) + output + (agent._std, ) + (stage_op,))
 
           level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
-          # print("LEVEL NAMES: ", level_names_v)
           total_episode_frames = num_env_frames_v
 
           for level_name, episode_return, episode_step, acc_episode_reward, acc_episode_step in zip(
@@ -624,7 +623,7 @@ def test(action_set, level_names):
       env = create_atari_environment(level_name, seed=1, is_test=True)
       outputs[level_name] = build_actor(agent, env, level_name, action_set)
 
-    logdir = "multi-task"
+    logdir = FLAGS.logdir
     # tf.logging.info("LOGDIR IS: {}".format(logdir))
     with tf.train.SingularMonitoredSession(
         checkpoint_dir=logdir,
