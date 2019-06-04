@@ -1,11 +1,11 @@
 # Copyright 2018 Google LLC
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
+
 #     https://www.apache.org/licenses/LICENSE-2.0
-#
+
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,13 +24,14 @@ import functools
 import os
 import sys
 
+import dmlab30_utilities
+import dmlab30_environment
 import numpy as np
 import py_process
 import sonnet as snt
 import tensorflow as tf
-import vtrace_orig as vtrace
-import utilities_atari
-import atari_environment
+import vtrace
+from agent import agent_factory
 
 try:
   import dynamic_batching
@@ -38,7 +39,6 @@ except tf.errors.NotFoundError:
   tf.logging.warning('Running without dynamic batching.')
 
 from six.moves import range
-
 
 nest = tf.contrib.framework.nest
 
@@ -57,173 +57,76 @@ flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
                   'Job name. Ignored when task is set to -1.')
 
 # Training.
-flags.DEFINE_integer('total_environment_frames', int(2e8),
+flags.DEFINE_integer('total_environment_frames', int(1e9),
                      'Total environment frames to train for.')
-flags.DEFINE_integer('num_actors', 1, 'Number of actors.')
-flags.DEFINE_integer('batch_size', 1, 'Batch size for training.')
-flags.DEFINE_integer('unroll_length', 20, 'Unroll length in agent steps.')
+flags.DEFINE_integer('num_actors', 4, 'Number of actors.')
+flags.DEFINE_integer('batch_size', 2, 'Batch size for training.')
+flags.DEFINE_integer('unroll_length', 100, 'Unroll length in agent steps.')
 flags.DEFINE_integer('num_action_repeats', 4, 'Number of action repeats.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
-flags.DEFINE_string('level_name', 'SeaquestNoFrameskip-v4', 'level name')
+flags.DEFINE_string('agent_name', 'LSTMAgent', 'Which learner to use')
 
-# Environment settings.
-
-flags.DEFINE_integer('width', 84, 'Width of observation')
-flags.DEFINE_integer('height', 84, 'Height of observation')
-
-# Optimizer settings.
-flags.DEFINE_float('entropy_cost', 0.01, 'Entropy cost/multiplier.')
+# Loss settings.
+flags.DEFINE_float('entropy_cost', 0.00025, 'Entropy cost/multiplier.')
 flags.DEFINE_float('baseline_cost', .5, 'Baseline cost/multiplier.')
 flags.DEFINE_float('discounting', .99, 'Discounting factor.')
 flags.DEFINE_enum('reward_clipping', 'abs_one', ['abs_one', 'soft_asymmetric'],
                   'Reward clipping.')
-flags.DEFINE_float('gradient_clipping', 40.0, 'Negative means no clipping')
+flags.DEFINE_float('gradient_clipping', -1.0, 'Negative means no clipping')
+
+# Environment settings.
+flags.DEFINE_string(
+    'dataset_path', '',
+    'Path to dataset needed for psychlab_*, see '
+    'https://github.com/deepmind/lab/tree/master/data/brady_konkle_oliva2008')
+flags.DEFINE_string('level_name', 'explore_goal_locations_small',
+                    '''Level name or \'dmlab30\' for the full DmLab-30 suite '''
+                    '''with levels assigned round robin to the actors.''')
+flags.DEFINE_integer('width', 96, 'Width of observation.')
+flags.DEFINE_integer('height', 72, 'Height of observation.')
 
 # Optimizer settings.
-flags.DEFINE_float('learning_rate', 0.0006, 'Learning rate.')
+flags.DEFINE_float('learning_rate', 0.00048, 'Learning rate.')
 flags.DEFINE_float('decay', .99, 'RMSProp optimizer decay.')
 flags.DEFINE_float('momentum', 0., 'RMSProp momentum.')
-flags.DEFINE_float('epsilon', .01, 'RMSProp epsilon.')
+flags.DEFINE_float('epsilon', .1, 'RMSProp epsilon.')
 
 
 # Structure to be sent from actors to learner.
 ActorOutput = collections.namedtuple(
     'ActorOutput', 'level_name agent_state env_outputs agent_outputs')
+
 AgentOutput = collections.namedtuple('AgentOutput',
                                      'action policy_logits baseline')
 
 game_id = {}
-games = utilities_atari.ATARI_GAMES.keys()
+games = dmlab30_utilities.LEVEL_MAPPING.keys()
 for i, game in enumerate(games):
   game_id[game] = i
 
 def is_single_machine():
-  return FLAGS.task == -1
+    return FLAGS.task == -1
 
 
-class Agent(snt.RNNCore):
-  """Agent with ResNet."""
+def compute_baseline_loss(advantages):
+  # Loss for the baseline, summed over the time dimension.
+  # Multiply by 0.5 to match the standard update rule:
+  # d(loss) / d(baseline) = advantage
+  return .5 * tf.reduce_sum(tf.square(advantages))
 
-  def __init__(self, num_actions):
-    super(Agent, self).__init__(name='agent')
+def compute_entropy_loss(logits):
+  policy = tf.nn.softmax(logits)
+  log_policy = tf.nn.log_softmax(logits)
+  entropy_per_timestep = tf.reduce_sum(-policy * log_policy, axis=-1)
+  return -tf.reduce_sum(entropy_per_timestep)
 
-    self._num_actions = num_actions
 
-    with self._enter_variable_scope():
-      self._core = tf.contrib.rnn.LSTMBlockCell(256)
-
-  def initial_state(self, batch_size):
-    return self._core.zero_state(batch_size, tf.float32)
-
-  def _instruction(self, instruction):
-    # Split string.
-    splitted = tf.string_split(instruction)
-    dense = tf.sparse_tensor_to_dense(splitted, default_value='')
-    length = tf.reduce_sum(tf.to_int32(tf.not_equal(dense, '')), axis=1)
-
-    # To int64 hash buckets. Small risk of having collisions. Alternatively, a
-    # vocabulary can be used.
-    num_hash_buckets = 1000
-    buckets = tf.string_to_hash_bucket_fast(dense, num_hash_buckets)
-
-    # Embed the instruction. Embedding size 20 seems to be enough.
-    embedding_size = 20
-    embedding = snt.Embed(num_hash_buckets, embedding_size)(buckets)
-
-    # Pad to make sure there is at least one output.
-    padding = tf.to_int32(tf.equal(tf.shape(embedding)[1], 0))
-    embedding = tf.pad(embedding, [[0, 0], [0, padding], [0, 0]])
-
-    core = tf.contrib.rnn.LSTMBlockCell(64, name='language_lstm')
-    output, _ = tf.nn.dynamic_rnn(core, embedding, length, dtype=tf.float32)
-
-    # Return last output.
-    return tf.reverse_sequence(output, length, seq_axis=1)[:, 0]
-
-  def _torso(self, input_):
-    last_action, env_output = input_
-    reward, _, _, frame = env_output
-
-    # Convert to floats.
-    frame = tf.to_float(frame)
-
-    frame /= 255
-    with tf.variable_scope('convnet'):
-      conv_out = frame
-      for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
-        # Downscale.
-        conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-        conv_out = tf.nn.pool(
-            conv_out,
-            window_shape=[3, 3],
-            pooling_type='MAX',
-            padding='SAME',
-            strides=[2, 2])
-
-        # Residual block(s).
-        for j in range(num_blocks):
-          with tf.variable_scope('residual_%d_%d' % (i, j)):
-            block_input = conv_out
-            conv_out = tf.nn.relu(conv_out)
-            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-            conv_out = tf.nn.relu(conv_out)
-            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-            conv_out += block_input
-
-    conv_out = tf.nn.relu(conv_out)
-    conv_out = snt.BatchFlatten()(conv_out)
-
-    conv_out = snt.Linear(256)(conv_out)
-    conv_out = tf.nn.relu(conv_out)
-
-    # instruction_out = self._instruction(instruction)
-
-    # Append clipped last reward and one hot last action.
-    clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
-    one_hot_last_action = tf.one_hot(last_action, self._num_actions)
-    return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action],
-        axis=1)
-
-  def _head(self, core_output):
-    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
-        core_output)
-    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-
-    # Sample an action from the policy.
-    new_action = tf.multinomial(policy_logits, num_samples=1,
-                                output_dtype=tf.int32)
-    new_action = tf.squeeze(new_action, 1, name='new_action')
-
-    return AgentOutput(new_action, policy_logits, baseline)
-
-  def _build(self, input_, core_state):
-    action, env_output = input_
-    actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
-                                              (action, env_output))
-    outputs, core_state = self.unroll(actions, env_outputs, core_state)
-    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
-
-  @snt.reuse_variables
-  def unroll(self, actions, env_outputs, core_state):
-    _, _, done, _ = env_outputs
-
-    torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
-
-    # Note, in this implementation we can't use CuDNN RNN to speed things up due
-    # to the state reset. This can be XLA-compiled (LSTMBlockCell needs to be
-    # changed to implement snt.LSTMCell).
-    initial_core_state = self._core.zero_state(tf.shape(actions)[1], tf.float32)
-    core_output_list = []
-    for input_, d in zip(tf.unstack(torso_outputs), tf.unstack(done)):
-      # If the episode ended, the core state should be reset before the next.
-      core_state = nest.map_structure(functools.partial(tf.where, d),
-                                      initial_core_state, core_state)
-      core_output, core_state = self._core(input_, core_state)
-      core_output_list.append(core_output)
-
-    return snt.BatchApply(self._head)(tf.stack(core_output_list)), core_state
-
+def compute_policy_gradient_loss(logits, actions, advantages):
+  cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+      labels=actions, logits=logits)
+  advantages = tf.stop_gradient(advantages)
+  policy_gradient_loss_per_timestep = cross_entropy * advantages
+  return tf.reduce_sum(policy_gradient_loss_per_timestep)
 
 def build_actor(agent, env, level_name, action_set):
   """Builds the actor loop."""
@@ -308,30 +211,7 @@ def build_actor(agent, env, level_name, action_set):
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
-
-def compute_baseline_loss(advantages):
-  # Loss for the baseline, summed over the time dimension.
-  # Multiply by 0.5 to match the standard update rule:
-  # d(loss) / d(baseline) = advantage
-  return .5 * tf.reduce_sum(tf.square(advantages))
-
-
-def compute_entropy_loss(logits):
-  policy = tf.nn.softmax(logits)
-  log_policy = tf.nn.log_softmax(logits)
-  entropy_per_timestep = tf.reduce_sum(-policy * log_policy, axis=-1)
-  return -tf.reduce_sum(entropy_per_timestep)
-
-
-def compute_policy_gradient_loss(logits, actions, advantages):
-  cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
-      labels=actions, logits=logits)
-  advantages = tf.stop_gradient(advantages)
-  policy_gradient_loss_per_timestep = cross_entropy * advantages
-  return tf.reduce_sum(policy_gradient_loss_per_timestep)
-
-
-def build_learner(agent, agent_state, env_outputs, agent_outputs):
+def build_learner(agent, agent_state, env_outputs, agent_outputs, env_id):
   """Builds the learner loop.
 
   Args:
@@ -347,12 +227,31 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
     A tuple of (done, infos, and environment frames) where
     the environment frames tensor causes an update.
   """
-  learner_outputs, _ = agent.unroll(agent_outputs.action, env_outputs,
-                                    agent_state)
 
+  # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
+  def get_single_game_info(_tuple):
+    single_env_id, game_info = _tuple
+    return game_info[single_env_id]
+
+  # Retrieve the specific games in the current batch. 
+  def get_batch_value(batch):
+    return tf.map_fn(get_single_game_info, (env_id, batch), dtype=tf.float32)
+
+  learner_outputs, _ = agent.unroll(agent_outputs.action, env_outputs, agent_state)
+  un_normalized_vf = learner_outputs.un_normalized_vf
+  normalized_vf   = learner_outputs.normalized_vf
+
+  game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
+  # game_specific_un_normalized_vf = tf.reduce_sum(game)
+  game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
+
+  # Ensure the learner separates the value functions for each game. 
+  # According to equation (10) in (Hessel et al., 2018). 
+  learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
+                                             normalized_vf=game_specific_normalized_vf) 
   # Use last baseline value (from the value function) to bootstrap.
-  bootstrap_value = learner_outputs.baseline[-1]
-
+  bootstrap_value = learner_outputs.un_normalized_vf[-1]
+ 
   # At this point, the environment outputs at time step `t` are the inputs that
   # lead to the learner_outputs at time step `t`. After the following shifting,
   # the actions in agent_outputs and learner_outputs at time step `t` is what
@@ -370,6 +269,8 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
     clipped_rewards = tf.where(rewards < 0, .3 * squeezed, squeezed) * 5.
 
   discounts = tf.to_float(~done) * FLAGS.discounting
+  game_specific_mean = tf.gather(agent._mean, env_id)
+  game_specific_std = tf.gather(agent._std, env_id)
 
   # Compute V-trace returns and weights.
   # Note, this is put on the CPU because it's faster than on GPU. It can be
@@ -381,56 +282,88 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
         actions=agent_outputs.action,
         discounts=discounts,
         rewards=clipped_rewards,
-        values=learner_outputs.baseline,
+        un_normalized_values=learner_outputs.un_normalized_vf,
+        normalized_values=learner_outputs.normalized_vf,
+        mean=game_specific_mean,
+        std=game_specific_std,
         bootstrap_value=bootstrap_value)
+
+  # First term of equation (7) in (Hessel et al., 2018)
+  normalized_vtrace = (vtrace_returns.vs - game_specific_mean) / game_specific_std
+
+  normalized_vtrace = nest.map_structure(tf.stop_gradient, normalized_vtrace)
+
 
   # Compute loss as a weighted sum of the baseline loss, the policy gradient
   # loss and an entropy regularization term.
   total_loss = compute_policy_gradient_loss(
       learner_outputs.policy_logits, agent_outputs.action,
       vtrace_returns.pg_advantages)
-  total_loss += FLAGS.baseline_cost * compute_baseline_loss(
-      vtrace_returns.vs - learner_outputs.baseline)
+
+  baseline_loss = compute_baseline_loss(
+       normalized_vtrace - learner_outputs.normalized_vf)
+  # Using the average GvT 
+  baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
+
+  total_loss += FLAGS.baseline_cost * baseline_loss
   total_loss += FLAGS.entropy_cost * compute_entropy_loss(
       learner_outputs.policy_logits)
 
   # Optimization
   num_env_frames = tf.train.get_global_step()
+
   learning_rate = tf.train.polynomial_decay(FLAGS.learning_rate, num_env_frames,
                                             FLAGS.total_environment_frames, 0)
+
   optimizer = tf.train.RMSPropOptimizer(learning_rate, FLAGS.decay,
                                         FLAGS.momentum, FLAGS.epsilon)
-  train_op = optimizer.minimize(total_loss)
+
+  # Use reward clipping for atari games only 
+  if FLAGS.gradient_clipping > 0.0:
+    # gradients, variables = zip(*optimizer.compute_gradients(total_loss))
+    variables = tf.trainable_variables()
+    gradients = tf.gradients(total_loss, variables)
+    # print("VARIABLES: ", variables)
+    gradients, _ = tf.clip_by_global_norm(gradients, FLAGS.gradient_clipping)
+    train_op = optimizer.apply_gradients(zip(gradients, variables))
+  else:
+    train_op = optimizer.minimize(total_loss)
 
   # Merge updating the network and environment frames into a single tensor.
   with tf.control_dependencies([train_op]):
     num_env_frames_and_train = num_env_frames.assign_add(
-        FLAGS.batch_size * FLAGS.unroll_length * FLAGS.num_action_repeats)
+        FLAGS.batch_size * FLAGS.unroll_length)
 
   # Adding a few summaries.
   tf.summary.scalar('learning_rate', learning_rate)
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
 
-  return done, infos, num_env_frames_and_train
+  return (done, infos, num_env_frames_and_train) + (agent.update_moments(vtrace_returns.vs, env_id))
 
+def create_environment(level_name, seed, is_test=False):
 
-def create_environment(env_id, seed, is_test=False):
+  """Creates an environment wrapped in a `FlowEnvironment`."""
+  if level_name in dmlab30_utilities.ALL_LEVELS:
+    level_name = 'contributed/dmlab30/' + level_name
 
+  # Note, you may want to use a level cache to speed of compilation of
+  # environment maps. See the documentation for the Python interface of DeepMind
+  # Lab.
   config = {
       'width': FLAGS.width,
-      'height': FLAGS.height
+      'height': FLAGS.height,
+      'datasetPath': FLAGS.dataset_path,
+      'logLevel': 'WARN',
   }
-
   if is_test:
     config['allowHoldOutLevels'] = 'true'
     # Mixer seed for evalution, see
     # https://github.com/deepmind/lab/blob/master/docs/users/python_api.md
     config['mixerSeed'] = 0x600D5EED
-
-  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id, config)
-  proxy_env = atari_environment.FlowEnvironment(process.proxy)
-  return proxy_env
+  p = py_process.PyProcess(dmlab30_environment.PyProcessDmLab, level_name, config,
+                           FLAGS.num_action_repeats, seed)
+  return dmlab30_environment.FlowEnvironment(p.proxy)
 
 
 @contextlib.contextmanager
@@ -479,6 +412,7 @@ def train(action_set, level_names):
     filters = [shared_job_device, local_job_device]
 
   # Only used to find the actor output structure.
+  Agent = agent_factory(FLAGS.agent_name)
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
     env = create_environment(level_names[0], seed=1)
@@ -562,17 +496,21 @@ def train(action_set, level_names):
 
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
+        level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
+        level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent, data_from_actors.agent_state,
                                data_from_actors.env_outputs,
-                               data_from_actors.agent_outputs)
+                               data_from_actors.agent_outputs,
+                               level_names_index)
 
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
     config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters)
-    config.gpu_options.allow_growth = True
-    config.gpu_options.per_process_gpu_memory_fraction = 0.8
-
+    if is_learner:
+        config.gpu_options.allow_growth = True
+        
     with tf.train.MonitoredTrainingSession(
         server.target,
         is_chief=is_learner,
@@ -595,45 +533,47 @@ def train(action_set, level_names):
         # Execute learning and track performance.
         num_env_frames_v = 0
         while num_env_frames_v < FLAGS.total_environment_frames:
-          level_names_v, done_v, infos_v, num_env_frames_v, _ = session.run(
-              (data_from_actors.level_name,) + output + (stage_op,))
+          level_names_v, done_v, infos_v, num_env_frames_v, mean, _, std, _ = session.run(
+              (data_from_actors.level_name,) + output + (agent._std, ) + (stage_op,))
           level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
 
           for level_name, episode_return, episode_step in zip(
               level_names_v[done_v],
               infos_v.episode_return[done_v],
               infos_v.episode_step[done_v]):
+
             episode_frames = episode_step * FLAGS.num_action_repeats
 
-            tf.logging.info('Level: %s Episode return: %f frames: %d',
-                            level_name, episode_return, num_env_frames_v)
+            tf.logging.info('Level: %s Episode return: %f',
+                            level_name, episode_return)
 
             summary = tf.summary.Summary()
             summary.value.add(tag=level_name + '/episode_return',
                               simple_value=episode_return)
             summary.value.add(tag=level_name + '/episode_frames',
                               simple_value=episode_frames)
+            summary.value.add(tag=level_name + '/env_mean', 
+                              simple_value=mean[game_id[level_name]])
+            summary.value.add(tag=level_name + '/env_std',
+                              simple_value=std[game_id[level_name]])
             summary_writer.add_summary(summary, num_env_frames_v)
 
-        
-            level_returns[level_name].append(episode_return)
-          if (min(map(len, level_returns.values())) >= 1):
-            no_cap = utilities_atari.compute_human_normalized_score(level_returns,
+            if FLAGS.level_name == 'dmlab30':
+              level_returns[level_name].append(episode_return)
+
+          if (FLAGS.level_name == 'dmlab30' and
+              min(map(len, level_returns.values())) >= 1):
+            no_cap = dmlab30_utilities.compute_human_normalized_score(level_returns,
                                                             per_level_cap=None)
-            # print("(experiment) No cap: ", no_cap)
                                                             
-            cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
+            cap_100 = dmlab30_utilities.compute_human_normalized_score(level_returns,
                                                              per_level_cap=100)
-            with open("normalized_scores.txt", "a+") as f:
-              f.write("num env frames: %d\n" % num_env_frames_v)
-              f.write("no cap: %f\n" % no_cap)
-              f.write("cap 100: %f\n" % cap_100)
 
             summary = tf.summary.Summary()
             summary.value.add(
-                tag='atari/training_no_cap', simple_value=no_cap)
+                tag='dmlab30/training_no_cap', simple_value=no_cap)
             summary.value.add(
-                tag='atari/training_cap_100', simple_value=cap_100)
+                tag='dmlab30/training_cap_100', simple_value=cap_100)
             summary_writer.add_summary(summary, num_env_frames_v)
 
             # Clear level scores.
@@ -644,11 +584,11 @@ def train(action_set, level_names):
         while True:
           session.run(enqueue_ops)
 
-
 def test(action_set, level_names):
   """Test."""
 
   level_returns = {level_name: [] for level_name in level_names}
+  Agent = agent_factory(FLAGS.agent_name)
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
     outputs = {}
@@ -674,9 +614,9 @@ def test(action_set, level_names):
             break
 
   if FLAGS.level_name == 'dmlab30':
-    no_cap = utilities_atari.compute_human_normalized_score(level_returns,
+    no_cap = dmlab30_utilities.compute_human_normalized_score(level_returns,
                                                     per_level_cap=None)
-    cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
+    cap_100 = dmlab30_utilities.compute_human_normalized_score(level_returns,
                                                      per_level_cap=100)
     tf.logging.info('No cap.: %f Cap 100: %f', no_cap, cap_100)
 
@@ -684,12 +624,18 @@ def test(action_set, level_names):
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
 
-  action_set = atari_environment.ATARI_ACTION_SET
+  action_set = dmlab30_environment.DEFAULT_ACTION_SET
+  if FLAGS.level_name == 'dmlab30' and FLAGS.mode == 'train':
+    level_names = dmlab30_utilities.LEVEL_MAPPING.keys()
+  elif FLAGS.level_name == 'dmlab30' and FLAGS.mode == 'test':
+    level_names = dmlab30_utilities.LEVEL_MAPPING.values()
+  else:
+    level_names = [FLAGS.level_name]
 
-#   if FLAGS.mode == 'train':
-  train(action_set, games)
-#   else:
-    # test(action_set, level_names)
+  if FLAGS.mode == 'train':
+    train(action_set, level_names)
+  else:
+    test(action_set, level_names)
 
 
 if __name__ == '__main__':
