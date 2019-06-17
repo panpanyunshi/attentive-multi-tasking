@@ -292,7 +292,7 @@ class ImpalaLSTM(snt.RNNCore):
 
   def _torso(self, input_):
     last_action, env_output = input_
-    reward, _, _, (frame, instruction) = env_output
+    reward, _, _, frame = env_output
 
     # Convert to floats.
     frame = tf.to_float(frame)
@@ -324,13 +324,13 @@ class ImpalaLSTM(snt.RNNCore):
     conv_out = snt.Linear(256)(conv_out)
     conv_out = tf.nn.relu(conv_out)
 
-    instruction_out = self._instruction(instruction)
+    # instruction_out = self._instruction(instruction)
 
     # Append clipped last reward and one hot last action.
     clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
     one_hot_last_action = tf.one_hot(last_action, self._num_actions)
     return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
+        [conv_out, clipped_reward, one_hot_last_action],
         axis=1)
 
   def _head(self, core_output):

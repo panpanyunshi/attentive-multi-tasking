@@ -32,7 +32,7 @@ nest = tf.contrib.framework.nest
 flags = tf.app.flags
 FLAGS = tf.app.flags.FLAGS
 
-flags.DEFINE_string('logdir', '/tmp/agent', 'TensorFlow log directory.')
+flags.DEFINE_string('logdir', '/tmp/atari/', 'TensorFlow log directory.')
 flags.DEFINE_enum('mode', 'train', ['train', 'test'], 'Training or test mode.')
 
 # Flags used for testing.
@@ -44,7 +44,7 @@ flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
                   'Job name. Ignored when task is set to -1.')
 
 # Agent
-flags.DEFINE_string('agent_name', 'ImpalaFeedForwardAgent', 'Which learner to use')
+flags.DEFINE_string('agent_name', 'ImpalaLSTM', 'Which learner to use')
 
 # Atari environments
 flags.DEFINE_integer('width', 84, 'Width of observation')
@@ -118,10 +118,12 @@ def build_actor(agent, env, level_name, action_set):
   """Builds the actor loop."""
   # Initial values.
   initial_env_output, initial_env_state = env.initial()
-  # initial_agent_state = agent.initial_state(1)
-
+  initial_agent_state = agent.initial_state(1)
   initial_action = tf.zeros([1], dtype=tf.int32)
-  dummy_agent_output = agent((initial_action, nest.map_structure(lambda t: tf.expand_dims(t, 0), initial_env_output)))
+  dummy_agent_output, _ = agent(
+      (initial_action,
+       nest.map_structure(lambda t: tf.expand_dims(t, 0), initial_env_output)),
+      initial_agent_state)
   initial_agent_output = nest.map_structure(
       lambda t: tf.zeros(t.shape, t.dtype), dummy_agent_output)
 
@@ -134,29 +136,31 @@ def build_actor(agent, env, level_name, action_set):
       return tf.get_local_variable(t.op.name, initializer=t, use_resource=True)
 
   persistent_state = nest.map_structure(
-      create_state, (initial_env_state, initial_env_output, initial_agent_output))
+      create_state, (initial_env_state, initial_env_output, initial_agent_state,
+                     initial_agent_output))
 
   def step(input_, unused_i):
     """Steps through the agent and the environment."""
-    env_state, env_output, agent_output = input_
+    env_state, env_output, agent_state, agent_output = input_
 
     # Run agent.
     action = agent_output[0]
     batched_env_output = nest.map_structure(lambda t: tf.expand_dims(t, 0),
                                             env_output)
-    agent_output = agent((action, batched_env_output))
+    agent_output, agent_state = agent((action, batched_env_output), agent_state)
 
     # Convert action index to the native action.
     action = agent_output[0][0]
     raw_action = tf.gather(action_set, action)
+
     env_output, env_state = env.step(raw_action, env_state)
 
-    return env_state, env_output, agent_output
+    return env_state, env_output, agent_state, agent_output
 
   # Run the unroll. `read_value()` is needed to make sure later usage will
   # return the first values and not a new snapshot of the variables.
   first_values = nest.map_structure(lambda v: v.read_value(), persistent_state)
-  _, first_env_output, first_agent_output = first_values
+  _, first_env_output, first_agent_state, first_agent_output = first_values
 
   # Use scan to apply `step` multiple times, therefore unrolling the agent
   # and environment interaction for `FLAGS.unroll_length`. `tf.scan` forwards
@@ -167,7 +171,7 @@ def build_actor(agent, env, level_name, action_set):
   # unroll. Note that the initial states and outputs (fed through `initializer`)
   # are not in `output` and will need to be added manually later.
   output = tf.scan(step, tf.range(FLAGS.unroll_length), first_values)
-  _, env_outputs, agent_outputs = output
+  _, env_outputs, _, agent_outputs = output
 
   # Update persistent state with the last output from the loop.
   assign_ops = nest.map_structure(lambda v, t: v.assign(t[-1]),
@@ -177,7 +181,7 @@ def build_actor(agent, env, level_name, action_set):
   # and outputs are stored in `persistent_state` (to initialize next unroll).
   with tf.control_dependencies(nest.flatten(assign_ops)):
     # Remove the batch dimension from the agent state/output.
-    # first_agent_state = nest.map_structure(lambda t: t[0], first_agent_state)
+    first_agent_state = nest.map_structure(lambda t: t[0], first_agent_state)
     first_agent_output = nest.map_structure(lambda t: t[0], first_agent_output)
     agent_outputs = nest.map_structure(lambda t: t[:, 0], agent_outputs)
 
@@ -186,21 +190,14 @@ def build_actor(agent, env, level_name, action_set):
         lambda first, rest: tf.concat([[first], rest], 0),
         (first_agent_output, first_env_output), (agent_outputs, env_outputs))
 
-    # Removed for now 
-    # Use the extra state information if it's the LSTM agent
-    # if hasattr(initial_agent_state, 'c') and hasattr(initial_agent_state, 'h'):
-    #   output = ActorOutput(
-    #       level_name=level_name, agent_state=first_agent_state,
-    #       env_outputs=full_env_outputs, agent_outputs=full_agent_outputs)
-    
-    output = ActorOutputFeedForward(
-        level_name=level_name, 
-        env_outputs=full_env_outputs,
-        agent_outputs=full_agent_outputs)
+    output = ActorOutput(
+        level_name=level_name, agent_state=first_agent_state,
+        env_outputs=full_env_outputs, agent_outputs=full_agent_outputs)
+
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
-def build_learner(agent, env_outputs, agent_outputs, global_step):
+def build_learner(agent, agent_state, env_outputs, agent_outputs, global_step):
   """Builds the learner loop.
 
   Args:
@@ -217,9 +214,10 @@ def build_learner(agent, env_outputs, agent_outputs, global_step):
     the environment frames tensor causes an update.
   """
 
-  learner_outputs = agent.unroll(agent_outputs.action, env_outputs)
+  learner_outputs, _ = agent.unroll(agent_outputs.action, env_outputs, agent_state)
 
   # Use last baseline value (from the value function) to bootstrap.
+  print(learner_outputs)
   bootstrap_value = learner_outputs.baseline[-1]
  
   # At this point, the environment outputs at time step `t` are the inputs that
@@ -450,17 +448,17 @@ def train(action_set, level_names):
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
         # Unroll agent on sequence, create losses and update ops.
-        output = build_learner(agent,
+        output = build_learner(agent, data_from_actors.agent_state,
                                data_from_actors.env_outputs,
                                data_from_actors.agent_outputs,
                                global_step=global_step)
-        
+
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
     config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters) 
     config.gpu_options.allow_growth = True
     # config.gpu_options.per_process_gpu_memory_fraction = 0.8
-    logdir = "impala-multi-task"
+    logdir = FLAGS.logdir
     
     with tf.train.MonitoredTrainingSession(
         server.target,
