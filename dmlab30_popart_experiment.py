@@ -291,9 +291,7 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs, env_id):
 
   # First term of equation (7) in (Hessel et al., 2018)
   normalized_vtrace = (vtrace_returns.vs - game_specific_mean) / game_specific_std
-
   normalized_vtrace = nest.map_structure(tf.stop_gradient, normalized_vtrace)
-
 
   # Compute loss as a weighted sum of the baseline loss, the policy gradient
   # loss and an entropy regularization term.
@@ -339,8 +337,8 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs, env_id):
   tf.summary.scalar('learning_rate', learning_rate)
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
-
-  return (done, infos, num_env_frames_and_train) + (agent.update_moments(vtrace_returns.vs, env_id))
+  statistics_update = (agent.update_moments(vtrace_returns.vs, env_id))
+  return (done, infos, num_env_frames_and_train) + statistics_update
 
 
 def build_impala_learner(agent, agent_state, env_outputs, agent_outputs):
@@ -565,22 +563,14 @@ def train(action_set, level_names):
         stage_op = area.put(flattened_output)
 
         data_from_actors = nest.pack_sequence_as(structure, area.get())
-        if FLAGS.agent_name == "PopArtLSTM":
-          level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
-          level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
-        else:
-          pass
 
-        # Unroll agent on sequence, create losses and update ops.
-        if FLAGS.agent_name == "PopArtLSTM":
-          output = build_learner(agent, data_from_actors.agent_state,
-                                data_from_actors.env_outputs,
-                                data_from_actors.agent_outputs,
-                                level_names_index)
-        else:
-          output = build_impala_learner(agent, data_from_actors.agent_state,
-                                        data_from_actors.env_outputs,
-                                        data_from_actors.agent_outputs)
+        level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
+        level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+
+        output = build_learner(agent, data_from_actors.agent_state,
+                              data_from_actors.env_outputs,
+                              data_from_actors.agent_outputs,
+                              level_names_index)
 
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
@@ -609,87 +599,48 @@ def train(action_set, level_names):
         # Execute learning and track performance.
         num_env_frames_v = 0
         while num_env_frames_v < FLAGS.total_environment_frames:
-          if FLAGS.agent_name == "PopArtLSTM":
-            level_names_v, done_v, infos_v, num_env_frames_v, mean, _, std, _ = session.run(
-                (data_from_actors.level_name,) + output + (agent._std, ) + (stage_op,))
-            level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
+          level_names_v, done_v, infos_v, num_env_frames_v, mean, _, std, _ = session.run(
+              (data_from_actors.level_name,) + output + (agent._std, ) + (stage_op,))
+          level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
 
-            for level_name, episode_return, episode_step in zip(
-                level_names_v[done_v],
-                infos_v.episode_return[done_v],
-                infos_v.episode_step[done_v]):
+          for level_name, episode_return, episode_step in zip(
+              level_names_v[done_v],
+              infos_v.episode_return[done_v],
+              infos_v.episode_step[done_v]):
 
-              episode_frames = episode_step * FLAGS.num_action_repeats
+            episode_frames = episode_step * FLAGS.num_action_repeats
 
-              tf.logging.info('Level: %s Episode return: %f',
-                              level_name, episode_return)
+            tf.logging.info('Level: %s Episode return: %f',
+                            level_name, episode_return)
 
-              summary = tf.summary.Summary()
-              summary.value.add(tag=level_name + '/episode_return',
-                                simple_value=episode_return)
-              summary.value.add(tag=level_name + '/episode_frames',
-                                simple_value=episode_frames)
-              summary.value.add(tag=level_name + '/env_mean', 
-                                simple_value=mean[game_id[level_name]])
-              summary.value.add(tag=level_name + '/env_std',
-                                simple_value=std[game_id[level_name]])
-              summary_writer.add_summary(summary, num_env_frames_v)
+            summary = tf.summary.Summary()
+            summary.value.add(tag=level_name + '/episode_return',
+                              simple_value=episode_return)
+            summary.value.add(tag=level_name + '/episode_frames',
+                              simple_value=episode_frames)
+            # summary.value.add(tag=level_name + '/env_mean', 
+            #                   simple_value=mean[game_id[level_name]])
+            # summary.value.add(tag=level_name + '/env_std',
+            #                   simple_value=std[game_id[level_name]])
+            summary_writer.add_summary(summary, num_env_frames_v)
 
-              if FLAGS.level_name == 'dmlab30':
-                level_returns[level_name].append(episode_return)
+            if FLAGS.level_name == 'dmlab30':
+              level_returns[level_name].append(episode_return)
 
-            if (FLAGS.level_name == 'dmlab30' and
-                min(map(len, level_returns.values())) >= 1):
-              no_cap = dmlab30_utilities.compute_human_normalized_score(level_returns,
-                                                              per_level_cap=None)
-                                                              
-              cap_100 = dmlab30_utilities.compute_human_normalized_score(level_returns,
-                                                              per_level_cap=100)
+          if (FLAGS.level_name == 'dmlab30' and
+              min(map(len, level_returns.values())) >= 1):
+            no_cap = dmlab30_utilities.compute_human_normalized_score(level_returns,
+                                                            per_level_cap=None)
+                                                            
+            cap_100 = dmlab30_utilities.compute_human_normalized_score(level_returns,
+                                                            per_level_cap=100)
 
-              summary = tf.summary.Summary()
-              summary.value.add(
-                  tag='dmlab30/training_no_cap', simple_value=no_cap)
-              summary.value.add(
-                  tag='dmlab30/training_cap_100', simple_value=cap_100)
-              summary_writer.add_summary(summary, num_env_frames_v)
-          else:
-            level_names_v, done_v, infos_v, num_env_frames_v, _ = session.run(
-            (data_from_actors.level_name,) + output + (stage_op,)) 
-            level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
-
-            for level_name, episode_return, episode_step in zip(
-                level_names_v[done_v],
-                infos_v.episode_return[done_v],
-                infos_v.episode_step[done_v]):
-              episode_frames = episode_step * FLAGS.num_action_repeats
-
-              tf.logging.info('Level: %s Episode return: %f',
-                              level_name, episode_return)
-
-              summary = tf.summary.Summary()
-              summary.value.add(tag=level_name + '/episode_return',
-                                simple_value=episode_return)
-              summary.value.add(tag=level_name + '/episode_frames',
-                                simple_value=episode_frames)
-              summary_writer.add_summary(summary, num_env_frames_v)
-
-              if FLAGS.level_name == 'dmlab30':
-                level_returns[level_name].append(episode_return)
-
-            if (FLAGS.level_name == 'dmlab30' and
-                min(map(len, level_returns.values())) >= 1):
-                no_cap = dmlab30_utilities.compute_human_normalized_score(level_returns,
-                                                                per_level_cap=None)
-                                                                
-                cap_100 = dmlab30_utilities.compute_human_normalized_score(level_returns,
-                                                                per_level_cap=100)
-
-                summary = tf.summary.Summary()
-                summary.value.add(
-                    tag='dmlab30/training_no_cap', simple_value=no_cap)
-                summary.value.add(
-                    tag='dmlab30/training_cap_100', simple_value=cap_100)
-                summary_writer.add_summary(summary, num_env_frames_v)
+            summary = tf.summary.Summary()
+            summary.value.add(
+                tag='dmlab30/training_no_cap', simple_value=no_cap)
+            summary.value.add(
+                tag='dmlab30/training_cap_100', simple_value=cap_100)
+            summary_writer.add_summary(summary, num_env_frames_v)
 
             # Clear level scores.
             level_returns = {level_name: [] for level_name in level_names}
