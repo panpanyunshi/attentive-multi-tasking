@@ -299,8 +299,25 @@ class ImpalaLSTM(snt.RNNCore):
 
     frame /= 255
     with tf.variable_scope('convnet'):
-        conv_out = res_net_convolution(frame)
-
+        conv_out = frame
+        for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
+            # Downscale.
+            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+            conv_out = tf.nn.pool(
+            conv_out,
+            window_shape=[3, 3],
+            pooling_type='MAX',
+            padding='SAME',
+            strides=[2, 2])
+            # Residual block(s).
+            for j in range(num_blocks):
+                with tf.variable_scope('residual_%d_%d' % (i, j)):
+                    block_input = conv_out
+                    conv_out = tf.nn.relu(conv_out)
+                    conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+                    conv_out = tf.nn.relu(conv_out)
+                    conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+                    conv_out += block_input
     conv_out = tf.nn.relu(conv_out)
     conv_out = snt.BatchFlatten()(conv_out)
 
@@ -413,7 +430,25 @@ class PopArtLSTM(snt.RNNCore):
         frame /= 255
         
         with tf.variable_scope('convnet'):
-            conv_out = res_net_convolution(frame)
+            conv_out = frame
+            for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
+                # Downscale.
+                conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+                conv_out = tf.nn.pool(
+                        conv_out,
+                        window_shape=[3, 3],
+                        pooling_type='MAX',
+                        padding='SAME',            
+                        strides=[2, 2])
+                # Residual block(s).
+                for j in range(num_blocks):
+                    with tf.variable_scope('residual_%d_%d' % (i, j)):
+                        block_input = conv_out
+                        conv_out = tf.nn.relu(conv_out)
+                        conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+                        conv_out = tf.nn.relu(conv_out)
+                        conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+                        conv_out += block_input
 
         conv_out = tf.nn.relu(conv_out)
         conv_out = snt.BatchFlatten()(conv_out)
@@ -435,11 +470,7 @@ class PopArtLSTM(snt.RNNCore):
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output)
 
         linear = snt.Linear(self._number_of_games, name='baseline')
-        print(linear)
-        # print("WEIGHT: ", linear.w)
         normalized_vf = linear(core_output)
-        print("VF: ", normalized_vf)
-        print(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES))
         un_normalized_vf = self._std * normalized_vf + self._mean
         # Sample an action from the policy.
         new_action = tf.multinomial(policy_logits, num_samples=1,
