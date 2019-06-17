@@ -308,13 +308,11 @@ def build_actor(agent, env, level_name, action_set):
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
-
 def compute_baseline_loss(advantages):
   # Loss for the baseline, summed over the time dimension.
   # Multiply by 0.5 to match the standard update rule:
   # d(loss) / d(baseline) = advantage
   return .5 * tf.reduce_sum(tf.square(advantages))
-
 
 def compute_entropy_loss(logits):
   policy = tf.nn.softmax(logits)
