@@ -349,7 +349,7 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   """
   learner_outputs, _ = agent.unroll(agent_outputs.action, env_outputs,
                                     agent_state)
-
+                                    
   # Use last baseline value (from the value function) to bootstrap.
   bootstrap_value = learner_outputs.baseline[-1]
 
