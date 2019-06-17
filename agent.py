@@ -468,17 +468,18 @@ class PopArtLSTM(snt.RNNCore):
     # The last layer of the neural network
     def _head(self, core_output):
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output)
-
-        linear = snt.Linear(self._number_of_games, name='baseline')
-        normalized_vf = linear(core_output)
-        un_normalized_vf = self._std * normalized_vf + self._mean
+        baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
+        # linear = snt.Linear(self._number_of_games, name='baseline')
+        # normalized_vf = linear(core_output)
+        # un_normalized_vf = self._std * normalized_vf + self._mean
         # Sample an action from the policy.
         new_action = tf.multinomial(policy_logits, num_samples=1,
                                     output_dtype=tf.int32)
 
         new_action = tf.squeeze(new_action, 1, name='new_action')
-
-        return AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
+        # output = AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
+        impala_output = ImpalaAgentOutput(new_action, policy_logits, baseline)
+        return impala_output
 
     def _build(self, input_, core_state):
         action, env_output = input_

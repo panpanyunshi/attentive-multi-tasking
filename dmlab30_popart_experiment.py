@@ -337,8 +337,8 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs, env_id):
   tf.summary.scalar('learning_rate', learning_rate)
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
-  statistics_update = (agent.update_moments(vtrace_returns.vs, env_id))
-  return (done, infos, num_env_frames_and_train) + statistics_update
+  # statistics_update = (agent.update_moments(vtrace_returns.vs, env_id))
+  return (done, infos, num_env_frames_and_train) 
 
 
 def build_impala_learner(agent, agent_state, env_outputs, agent_outputs):
