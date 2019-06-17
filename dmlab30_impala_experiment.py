@@ -31,6 +31,7 @@ import py_process
 import sonnet as snt
 import tensorflow as tf
 import vtrace_orig as vtrace
+from agent import agent_factory
 
 try:
   import dynamic_batching
@@ -71,6 +72,7 @@ flags.DEFINE_float('baseline_cost', .5, 'Baseline cost/multiplier.')
 flags.DEFINE_float('discounting', .99, 'Discounting factor.')
 flags.DEFINE_enum('reward_clipping', 'abs_one', ['abs_one', 'soft_asymmetric'],
                   'Reward clipping.')
+flags.DEFINE_string('agent_name', 'ImpalaLSTM', 'Which learner to use')
 
 # Environment settings.
 flags.DEFINE_string(
@@ -481,7 +483,7 @@ def train(action_set, level_names):
     server = tf.train.Server(cluster, job_name=FLAGS.job_name,
                              task_index=FLAGS.task)
     filters = [shared_job_device, local_job_device]
-
+  Agent = agent_factory(FLAGS.agent_name)
   # Only used to find the actor output structure.
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
