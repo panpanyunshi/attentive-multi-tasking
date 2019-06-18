@@ -30,7 +30,8 @@ import numpy as np
 import py_process
 import sonnet as snt
 import tensorflow as tf
-import vtrace_orig as vtrace
+import vtrace_orig as vtrace_imp
+import vtrace as vtrace_popart
 from agent import agent_factory
 
 try:
@@ -98,6 +99,14 @@ ActorOutput = collections.namedtuple(
 AgentOutput = collections.namedtuple('AgentOutput',
                                      'action policy_logits baseline')
 
+
+game_id = {}
+games = dmlab30.LEVEL_MAPPING.keys()
+for i, game in enumerate(games):
+  game_id[game] = i
+
+def popart_enabled():
+  return FLAGS.agent_name == "PopArtLSTM"
 
 def is_single_machine():
   return FLAGS.task == -1
@@ -331,7 +340,7 @@ def compute_policy_gradient_loss(logits, actions, advantages):
   return tf.reduce_sum(policy_gradient_loss_per_timestep)
 
 
-def build_learner(agent, agent_state, env_outputs, agent_outputs):
+def build_learner(agent, agent_state, env_outputs, agent_outputs, env_id):
   """Builds the learner loop.
 
   Args:
@@ -349,9 +358,27 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   """
   learner_outputs, _ = agent.unroll(agent_outputs.action, env_outputs,
                                     agent_state)
-                                    
-  # Use last baseline value (from the value function) to bootstrap.
-  bootstrap_value = learner_outputs.baseline[-1]
+  def get_single_game_info(_tuple):
+    single_env_id, game_info = _tuple
+    return game_info[single_env_id]
+
+  # Retrieve the specific games in the current batch. 
+  def get_batch_value(batch):
+    return tf.map_fn(get_single_game_info, (env_id, batch), dtype=tf.float32)
+
+  if popart_enabled():
+    un_normalized_vf               = learner_outputs.un_normalized_vf
+    normalized_vf                  = learner_outputs.normalized_vf
+    game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
+    game_specific_normalized_vf    = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
+    learner_outputs                = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
+                                                              normalized_vf=game_specific_normalized_vf)
+    bootstrap_value                = learner_outputs.un_normalized_vf[-1]
+
+    game_specific_mean = tf.gather(agent._mean, env_id)
+    game_specific_std  = tf.gather(agent._std, env_id)
+  else:  
+    bootstrap_value                = learner_outputs.baseline[-1]
 
   # At this point, the environment outputs at time step `t` are the inputs that
   # lead to the learner_outputs at time step `t`. After the following shifting,
@@ -361,6 +388,7 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   rewards, infos, done, _ = nest.map_structure(
       lambda t: t[1:], env_outputs)
   learner_outputs = nest.map_structure(lambda t: t[:-1], learner_outputs)
+
 
   if FLAGS.reward_clipping == 'abs_one':
     clipped_rewards = tf.clip_by_value(rewards, -1, 1)
@@ -374,25 +402,53 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   # Compute V-trace returns and weights.
   # Note, this is put on the CPU because it's faster than on GPU. It can be
   # improved further with XLA-compilation or with a custom TensorFlow operation.
-  with tf.device('/cpu'):
-    vtrace_returns = vtrace.from_logits(
-        behaviour_policy_logits=agent_outputs.policy_logits,
-        target_policy_logits=learner_outputs.policy_logits,
-        actions=agent_outputs.action,
-        discounts=discounts,
-        rewards=clipped_rewards,
-        values=learner_outputs.baseline,
-        bootstrap_value=bootstrap_value)
-
   # Compute loss as a weighted sum of the baseline loss, the policy gradient
   # loss and an entropy regularization term.
-  total_loss = compute_policy_gradient_loss(
-      learner_outputs.policy_logits, agent_outputs.action,
-      vtrace_returns.pg_advantages)
-  total_loss += FLAGS.baseline_cost * compute_baseline_loss(
-      vtrace_returns.vs - learner_outputs.baseline)
-  total_loss += FLAGS.entropy_cost * compute_entropy_loss(
-      learner_outputs.policy_logits)
+  if popart_enabled():
+      with tf.device('/cpu'):
+          vtrace_returns = vtrace_popart.from_logits(
+              behaviour_policy_logits=agent_outputs.policy_logits,
+              target_policy_logits=learner_outputs.policy_logits,
+              actions=agent_outputs.action,
+              discounts=discounts,
+              rewards=clipped_rewards,
+              un_normalized_values=learner_outputs.un_normalized_vf,
+              normalized_values=learner_outputs.normalized_vf,
+              mean=game_specific_mean,
+              std=game_specific_std,
+              bootstrap_value=bootstrap_value)
+
+      normalized_vtrace = (vtrace_returns.vs - game_specific_mean) / game_specific_std
+      normalized_vtrace = tf.stop_gradient(normalized_vtrace)
+
+      total_loss = compute_policy_gradient_loss(learner_outputs.policy_logits, 
+                                                agent_outputs.action, 
+                                                vtrace_returns.pg_advantages)
+
+      baseline_loss = compute_baseline_loss(normalized_vtrace - learner_outputs.normalized_vf)
+
+  # First term of equation (7) in (Hessel et al., 2018)
+  else:
+      with tf.device('/cpu'):
+          vtrace_returns = vtrace_imp.from_logits(
+              behaviour_policy_logits=agent_outputs.policy_logits,
+              target_policy_logits=learner_outputs.policy_logits,
+              actions=agent_outputs.action,
+              discounts=discounts,
+              rewards=clipped_rewards,
+              values=learner_outputs.baseline,
+              bootstrap_value=bootstrap_value)
+          # Using the average GvT 
+          # baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
+
+      total_loss = compute_policy_gradient_loss(learner_outputs.policy_logits, 
+                                                agent_outputs.action,
+                                                vtrace_returns.pg_advantages)
+                                                
+      baseline_loss = compute_baseline_loss(vtrace_returns.vs - learner_outputs.baseline)
+
+  total_loss += FLAGS.baseline_cost * baseline_loss
+  total_loss += FLAGS.entropy_cost * compute_entropy_loss(learner_outputs.policy_logits)
 
   # Optimization
   num_env_frames = tf.train.get_global_step()
@@ -412,7 +468,12 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs):
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
 
-  return done, infos, num_env_frames_and_train
+  if popart_enabled():
+      outputs = (done, infos, num_env_frames_and_train) + (agent.update_moments(vtrace_returns.vs, env_id))
+  else:
+      outputs = done, infos, num_env_frames_and_train
+
+  return outputs
 
 
 def create_environment(level_name, seed, is_test=False):
@@ -483,7 +544,7 @@ def train(action_set, level_names):
     server = tf.train.Server(cluster, job_name=FLAGS.job_name,
                              task_index=FLAGS.task)
     filters = [shared_job_device, local_job_device]
-  Agent = agent_factory(FLAGS.agent_name)
+  # Agent = agent_factory(FLAGS.agent_name)
   # Only used to find the actor output structure.
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
@@ -568,10 +629,14 @@ def train(action_set, level_names):
 
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
+        level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
+        level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+        print("LEVEL NAMES: ", level_names_index)
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent, data_from_actors.agent_state,
                                data_from_actors.env_outputs,
-                               data_from_actors.agent_outputs)
+                               data_from_actors.agent_outputs, 
+                               level_names_index)
 
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
@@ -597,11 +662,18 @@ def train(action_set, level_names):
 
         # Execute learning and track performance.
         num_env_frames_v = 0
+        # output = session.run(output)
+        # print(output)
         while num_env_frames_v < FLAGS.total_environment_frames:
-          level_names_v, done_v, infos_v, num_env_frames_v, _ = session.run(
+          if popart_enabled():
+            level_names_v, done_v, infos_v, num_env_frames_v, mean, _, std, _ = session.run(
+                (data_from_actors.level_name,) + output + (agent._std, ) + (stage_op,))
+          else:
+            level_names_v, done_v, infos_v, num_env_frames_v, _ = session.run(
               (data_from_actors.level_name,) + output + (stage_op,))
-          level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
 
+          level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
+          
           for level_name, episode_return, episode_step in zip(
               level_names_v[done_v],
               infos_v.episode_return[done_v],

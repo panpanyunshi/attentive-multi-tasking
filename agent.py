@@ -292,7 +292,7 @@ class ImpalaLSTM(snt.RNNCore):
 
   def _torso(self, input_):
     last_action, env_output = input_
-    reward, _, _, frame = env_output
+    reward, _, _, (instruction, frame) = env_output
 
     # Convert to floats.
     frame = tf.to_float(frame)
@@ -324,20 +324,19 @@ class ImpalaLSTM(snt.RNNCore):
     conv_out = snt.Linear(256)(conv_out)
     conv_out = tf.nn.relu(conv_out)
 
-    # instruction_out = self._instruction(instruction)
+    instruction_out = self._instruction(instruction)
 
     # Append clipped last reward and one hot last action.
     clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
     one_hot_last_action = tf.one_hot(last_action, self._num_actions)
     return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action],
+        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
         axis=1)
 
   def _head(self, core_output):
     policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
         core_output)
     baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-
     # Sample an action from the policy.
     new_action = tf.multinomial(policy_logits, num_samples=1,
                                 output_dtype=tf.int32)
@@ -468,7 +467,7 @@ class PopArtLSTM(snt.RNNCore):
     # The last layer of the neural network
     def _head(self, core_output):
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output)
-        baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
+        # baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
         linear = snt.Linear(self._number_of_games, name='baseline')
         normalized_vf = linear(core_output)
         un_normalized_vf = self._std * normalized_vf + self._mean
