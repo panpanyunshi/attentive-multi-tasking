@@ -275,7 +275,7 @@ def from_importance_weights(
         fn=scanfunc,
         elems=sequences,
         initializer=initial_values,
-        parallel_iterations=1,
+        parallel_iterations=50,
         back_prop=False,
         reverse=True,
         name='scan')

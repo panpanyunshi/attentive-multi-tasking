@@ -469,17 +469,17 @@ class PopArtLSTM(snt.RNNCore):
     def _head(self, core_output):
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output)
         baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-        # linear = snt.Linear(self._number_of_games, name='baseline')
-        # normalized_vf = linear(core_output)
-        # un_normalized_vf = self._std * normalized_vf + self._mean
+        linear = snt.Linear(self._number_of_games, name='baseline')
+        normalized_vf = linear(core_output)
+        un_normalized_vf = self._std * normalized_vf + self._mean
         # Sample an action from the policy.
         new_action = tf.multinomial(policy_logits, num_samples=1,
                                     output_dtype=tf.int32)
 
         new_action = tf.squeeze(new_action, 1, name='new_action')
-        # output = AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
-        impala_output = ImpalaAgentOutput(new_action, policy_logits, baseline)
-        return impala_output
+        output = AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
+        # impala_output = ImpalaAgentOutput(new_action, policy_logits, baseline)
+        return output
 
     def _build(self, input_, core_state):
         action, env_output = input_
@@ -511,61 +511,61 @@ class PopArtLSTM(snt.RNNCore):
         output = snt.BatchApply(self._head, name='batch_apply_unroll')(tf.stack(core_output_list)), core_state
         return output
 
-    # def update_moments(self, vs, env_id):
-    #     """
-    #     This function computes the adaptive normalization statistics for the actor and critic updates
-    #     while preserving the outputs (PopArt) according to (Hessel et al., 2018). 
-    #     https://arxiv.org/abs/1809.04474
+    def update_moments(self, vs, env_id):
+        """
+        This function computes the adaptive normalization statistics for the actor and critic updates
+        while preserving the outputs (PopArt) according to (Hessel et al., 2018). 
+        https://arxiv.org/abs/1809.04474
 
-    #     Args: 
-    #         vs:     Vtrace corrected value estimates. 
-    #         env_id: single game id. Used to pair the value function and specific game. 
+        Args: 
+            vs:     Vtrace corrected value estimates. 
+            env_id: single game id. Used to pair the value function and specific game. 
 
-    #     Returns:
-    #         A tuple of the updated first and second moments. 
-    #     """
+        Returns:
+            A tuple of the updated first and second moments. 
+        """
 
-    #     with tf.variable_scope("popart_lstm/batch_apply_unroll/baseline", reuse=True):
-    #         weight = tf.get_variable("w")
-    #         bias = tf.get_variable("b")
+        with tf.variable_scope("popart_lstm/batch_apply_unroll/baseline", reuse=True):
+            weight = tf.get_variable("w")
+            bias = tf.get_variable("b")
 
-    #     def update_step(mm, _tuple):
-    #         mean, mean_squared = mm
-    #         gvt, _env_id = _tuple
-    #         _env_id = tf.reshape(_env_id, [1, 1])
+        def update_step(mm, _tuple):
+            mean, mean_squared = mm
+            gvt, _env_id = _tuple
+            _env_id = tf.reshape(_env_id, [1, 1])
 
-    #         # According to equation (6) in (Hessel et al., 2018).
-    #         # Matching the specific game with it's current vtrace corrected value estimate. 
-    #         first_moment   = tf.reshape((1 - self._beta) * tf.gather(mean, _env_id) + self._beta * gvt, [1])
-    #         second_moment  = tf.reshape((1 - self._beta) * tf.gather(mean_squared, _env_id) + self._beta * tf.square(gvt), [1])
+            # According to equation (6) in (Hessel et al., 2018).
+            # Matching the specific game with it's current vtrace corrected value estimate. 
+            first_moment   = tf.reshape((1 - self._beta) * tf.gather(mean, _env_id) + self._beta * gvt, [1])
+            second_moment  = tf.reshape((1 - self._beta) * tf.gather(mean_squared, _env_id) + self._beta * tf.square(gvt), [1])
 
-    #         # Matching the moments to the specific environment, so we only update the statistics for the specific game. 
-    #         n_mean         = tf.tensor_scatter_update(mean, _env_id, first_moment)
-    #         n_mean_squared = tf.tensor_scatter_update(mean_squared, _env_id, second_moment)
-    #         return n_mean, n_mean_squared
+            # Matching the moments to the specific environment, so we only update the statistics for the specific game. 
+            n_mean         = tf.tensor_scatter_update(mean, _env_id, first_moment)
+            n_mean_squared = tf.tensor_scatter_update(mean_squared, _env_id, second_moment)
+            return n_mean, n_mean_squared
 
-    #     # The batch may contain different games, so we need to ensure that 
-    #     # the vtrace corrected value estimate matches the current game. 
-    #     def update_batch(mm, gvt):
-    #         return tf.foldl(update_step, (gvt, env_id), initializer=mm)
+        # The batch may contain different games, so we need to ensure that 
+        # the vtrace corrected value estimate matches the current game. 
+        def update_batch(mm, gvt):
+            return tf.foldl(update_step, (gvt, env_id), initializer=mm)
 
-    #     new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
-    #     new_std = tf.sqrt(new_mean_squared - tf.square(new_mean))
-    #     new_std = tf.clip_by_value(new_std, self._epsilon, 1e6)
+        new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
+        new_std = tf.sqrt(new_mean_squared - tf.square(new_mean))
+        new_std = tf.clip_by_value(new_std, self._epsilon, 1e6)
 
-    #     # According to equation (9) in (Hessel et al., 2018)
+        # According to equation (9) in (Hessel et al., 2018)
 
-    #     weight_update = weight * self._std / new_std
-    #     bias_update   = (self._std * bias + self._mean - new_mean) / new_std 
-    #     # Preserving outputs precisely (Pop). 
-    #     new_weight = tf.assign(weight, weight_update)
-    #     new_bias = tf.assign(bias, bias_update)
+        weight_update = weight * self._std / new_std
+        bias_update   = (self._std * bias + self._mean - new_mean) / new_std 
+        # Preserving outputs precisely (Pop). 
+        new_weight = tf.assign(weight, weight_update)
+        new_bias = tf.assign(bias, bias_update)
                 
-    #     with tf.control_dependencies([new_weight, new_bias]):
-    #         new_mean = tf.assign(self._mean, new_mean)
-    #         new_mean_squared = tf.assign(self._mean_squared, new_mean_squared)
+        with tf.control_dependencies([new_weight, new_bias]):
+            new_mean = tf.assign(self._mean, new_mean)
+            new_mean_squared = tf.assign(self._mean_squared, new_mean_squared)
 
-    #     return new_mean, new_mean_squared
+        return new_mean, new_mean_squared
 
 def agent_factory(agent_name):
   specific_agent = {
