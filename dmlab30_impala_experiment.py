@@ -545,7 +545,8 @@ def train(action_set, level_names):
     server = tf.train.Server(cluster, job_name=FLAGS.job_name,
                              task_index=FLAGS.task)
     filters = [shared_job_device, local_job_device]
-  #Agent = agent_factory(FLAGS.agent_name)
+  Agent = agent_factory(FLAGS.agent_name)
+  print(Agent)
   # Only used to find the actor output structure.
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
