@@ -34,10 +34,10 @@ import vtrace_orig as vtrace_imp
 import vtrace as vtrace_popart
 from agent import agent_factory
 
-try:
-  import dynamic_batching
-except tf.errors.NotFoundError:
-  tf.logging.warning('Running without dynamic batching.')
+#try:
+#  import dynamic_batching
+#except tf.errors.NotFoundError:
+#  tf.logging.warning('Running without dynamic batching.')
 
 from six.moves import range
 
@@ -96,9 +96,10 @@ flags.DEFINE_float('epsilon', .1, 'RMSProp epsilon.')
 # Structure to be sent from actors to learner.
 ActorOutput = collections.namedtuple(
     'ActorOutput', 'level_name agent_state env_outputs agent_outputs')
-AgentOutput = collections.namedtuple('AgentOutput',
-                                     'action policy_logits baseline')
 
+
+AgentOutput = collections.namedtuple('AgentOutput',
+                                         'action policy_logits baseline')
 
 game_id = {}
 games = dmlab30.LEVEL_MAPPING.keys()
@@ -544,7 +545,7 @@ def train(action_set, level_names):
     server = tf.train.Server(cluster, job_name=FLAGS.job_name,
                              task_index=FLAGS.task)
     filters = [shared_job_device, local_job_device]
-  # Agent = agent_factory(FLAGS.agent_name)
+  #Agent = agent_factory(FLAGS.agent_name)
   # Only used to find the actor output structure.
   with tf.Graph().as_default():
     agent = Agent(len(action_set))
