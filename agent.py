@@ -67,9 +67,12 @@ class ImpalaFeedForward(snt.AbstractModule):
   """Agent with Simple CNN."""
 
   def __init__(self, num_actions):
-    super(ImpalaFeedForward, self).__init__(name='impala_feed_forward_agent')
+    super(ImpalaFeedForward, self).__init__(name='simple_convnet_agent')
 
     self._num_actions = num_actions
+
+  def initial_state(self, batch_size):
+    return tf.constant(0, shape=[1,1])
 
   def _torso(self, input_):
     last_action, env_output = input_
@@ -80,13 +83,15 @@ class ImpalaFeedForward(snt.AbstractModule):
 
     with tf.variable_scope('convnet'):
       conv_out = frame
-      conv_out = snt.Conv2D(16, 8, stride=4)(conv_out)
+      conv_out = snt.Conv2D(32, 8, stride=4)(conv_out)
       conv_out = tf.nn.relu(conv_out)
-      conv_out = snt.Conv2D(32, 4, stride=2)(conv_out)
+      conv_out = snt.Conv2D(64, 4, stride=2)(conv_out)
+      conv_out = tf.nn.relu(conv_out)
+      conv_out = snt.Conv2D(64, 3, stride=1)(conv_out)
+      conv_out = tf.nn.relu(conv_out)
 
-    conv_out = tf.nn.relu(conv_out)
     conv_out = snt.BatchFlatten()(conv_out)
-    conv_out = snt.Linear(256)(conv_out)
+    conv_out = snt.Linear(512)(conv_out)
     conv_out = tf.nn.relu(conv_out)
 
     # Append clipped last reward and one hot last action.
@@ -97,7 +102,8 @@ class ImpalaFeedForward(snt.AbstractModule):
         axis=1)
 
   def _head(self, core_output):
-    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output)
+    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
+        core_output)
     baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
 
     # Sample an action from the policy.
@@ -107,20 +113,20 @@ class ImpalaFeedForward(snt.AbstractModule):
 
     return ImpalaAgentOutput(new_action, policy_logits, baseline)
 
-  def _build(self, input_):
+  def _build(self, input_, core_state):
     action, env_output = input_
     actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
                                               (action, env_output))
-    outputs = self.unroll(actions, env_outputs)
-    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs)
+    outputs, core_state = self.unroll(actions, env_outputs, core_state)
+    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
 
   @snt.reuse_variables
-  def unroll(self, actions, env_outputs):
+  def unroll(self, actions, env_outputs, core_state):
     _, _, done, _ = env_outputs
 
     torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
 
-    return snt.BatchApply(self._head)(torso_outputs)
+    return snt.BatchApply(self._head)(torso_outputs), core_state
 
 class ImpalaLSTM(snt.RNNCore):
 
@@ -246,7 +252,6 @@ class ImpalaLSTM(snt.RNNCore):
 
     return snt.BatchApply(self._head)(tf.stack(core_output_list)), core_state
 
-
 class PopArtFeedForward(snt.AbstractModule):
     def __init__(self, num_actions):
         super(PopArtFeedForward, self).__init__(name="popart_feed_forward")
@@ -365,8 +370,6 @@ class PopArtFeedForward(snt.AbstractModule):
             new_mean_squared = tf.assign(self._mean_squared, new_mean_squared)
 
         return new_mean, new_mean_squared
-
-
 
 class PopArtLSTM(snt.RNNCore):
 
