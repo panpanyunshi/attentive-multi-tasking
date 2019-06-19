@@ -167,12 +167,14 @@ def build_actor(agent, env, level_name, action_set):
         lambda first, rest: tf.concat([[first], rest], 0),
         (first_agent_output, first_env_output), (agent_outputs, env_outputs))
 
-
-    output = ActorOutputNoState(level_name=level_name,
-                                env_outputs=full_env_outputs,
-                                agent_outputs=full_agent_outputs)
-    
-    print("OUTPUT OF ACTOR: ", output)
+    if hasattr(initial_agent_state, 'c') and hasattr(initial_agent_state, 'h'):
+      output = ActorOutput(level_name=level_name, agent_state=first_agent_state,
+                           env_outputs=full_env_outputs,
+                           agent_outputs=full_agent_outputs)
+    else:
+      output = ActorOutputNoState(level_name=level_name,
+                                  env_outputs=full_env_outputs,
+                                  agent_outputs=full_agent_outputs)
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
