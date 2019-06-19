@@ -59,7 +59,7 @@ flags.DEFINE_integer('total_environment_frames', int(1e9),
 flags.DEFINE_integer('batch_size', 2, 'Batch size for training.')
 flags.DEFINE_integer('unroll_length', 100, 'Unroll length in agent steps.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
-flags.DEFINE_string('agent_name', 'SimpleConvNetAgent', 'agent name.')
+flags.DEFINE_string('agent_name', 'ImpalaFeedForward', 'agent name.')
 flags.DEFINE_integer('queue_capacity', 1, 'Queue capacity.')
 
 # Loss settings.
@@ -167,15 +167,12 @@ def build_actor(agent, env, level_name, action_set):
         lambda first, rest: tf.concat([[first], rest], 0),
         (first_agent_output, first_env_output), (agent_outputs, env_outputs))
 
-    if hasattr(initial_agent_state, 'c') and hasattr(initial_agent_state, 'h'):
-      output = ActorOutput(level_name=level_name, agent_state=first_agent_state,
-                           env_outputs=full_env_outputs,
-                           agent_outputs=full_agent_outputs)
-    else:
-      output = ActorOutputNoState(level_name=level_name,
-                                  env_outputs=full_env_outputs,
-                                  agent_outputs=full_agent_outputs)
 
+    output = ActorOutputNoState(level_name=level_name,
+                                env_outputs=full_env_outputs,
+                                agent_outputs=full_agent_outputs)
+    
+    print("OUTPUT OF ACTOR: ", output)
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
@@ -274,9 +271,9 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs, g_step):
   # horovod all-reduce optimizer
   if FLAGS.gradients_clipping > 0.0:
     grads_and_vars = optimizer.compute_gradients(total_loss)
-    grads, vars = zip(*grads_and_vars)
-    cgrads, _ = tf.clip_by_global_norm(grads, FLAGS.gradients_clipping)
-    grads_and_vars = zip(cgrads, vars)
+    gradients, variables = zip(*grads_and_vars)
+    clipped_grads, _ = tf.clip_by_global_norm(gradients, FLAGS.gradients_clipping)
+    grads_and_vars = zip(clipped_grads, variables)
     train_op = optimizer.apply_gradients(grads_and_vars, global_step=g_step)
   else:
     train_op = optimizer.minimize(total_loss, global_step=g_step)
@@ -291,7 +288,7 @@ def build_learner(agent, agent_state, env_outputs, agent_outputs, g_step):
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
 
-  return (done, infos, num_env_frames_and_train), optimizer
+  return done, infos, num_env_frames_and_train
 
 
 def create_environment(level_name, seed, is_test=False):
@@ -399,6 +396,9 @@ def train(action_set, level_names):
         with tf.device(shared_job_device):
           enqueue_ops.append(queue.enqueue(nest.flatten(actor_output)))
 
+    if is_learner and enqueue_ops:
+
+      tf.train.add_queue_runner(tf.train.QueueRunner(queue, enqueue_ops))
     # Build learner.
     if is_learner:
       # Create global step, which is the number of environment frames
@@ -435,7 +435,8 @@ def train(action_set, level_names):
           agent_state = data_from_actors.agent_state
         else:
           agent_state = agent.initial_state(1)
-        output, optimizer = build_learner(
+
+        output = build_learner(
           agent,
           agent_state=agent_state,
           env_outputs=data_from_actors.env_outputs,
@@ -485,8 +486,8 @@ def train(action_set, level_names):
 
             tf.logging.info(
               'Env: %s Episode return: %f '
-              'Episode raw return: %f',
-              level_name, episode_return, episode_raw_return
+              'Episode raw return: %f after %d frames',
+              level_name, episode_return, episode_raw_return, num_env_frames_v
             )
 
             summary = tf.summary.Summary()
