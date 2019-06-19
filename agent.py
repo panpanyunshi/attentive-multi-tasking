@@ -1,4 +1,3 @@
-""" Agent zoo. Each agent is a Neural Network carrier """
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -9,225 +8,13 @@ import functools
 import sonnet as snt
 import tensorflow as tf
 nest = tf.contrib.framework.nest
+import dmlab30_utilities
+import atari_utilities
 
-
-AgentOutput = collections.namedtuple('AgentOutput',
+ImpalaAgentOutput = collections.namedtuple('ImpalaAgentOutput',
                                      'action policy_logits baseline')
-
-
-class SimpleConvNet(snt.AbstractModule):
-  """Agent with Simple CNN."""
-
-  def __init__(self, num_actions):
-    super(SimpleConvNet, self).__init__(name='simple_convnet_agent')
-
-    self._num_actions = num_actions
-
-  def initial_state(self, batch_size):
-    return tf.constant(0, shape=[1,1])
-
-  def _instruction(self, instruction):
-    # Split string.
-    splitted = tf.string_split(instruction)
-    dense = tf.sparse_tensor_to_dense(splitted, default_value='')
-    length = tf.reduce_sum(tf.to_int32(tf.not_equal(dense, '')), axis=1)
-
-    # To int64 hash buckets. Small risk of having collisions. Alternatively, a
-    # vocabulary can be used.
-    num_hash_buckets = 1000
-    buckets = tf.string_to_hash_bucket_fast(dense, num_hash_buckets)
-
-    # Embed the instruction. Embedding size 20 seems to be enough.
-    embedding_size = 20
-    embedding = snt.Embed(num_hash_buckets, embedding_size)(buckets)
-
-    # Pad to make sure there is at least one output.
-    padding = tf.to_int32(tf.equal(tf.shape(embedding)[1], 0))
-    embedding = tf.pad(embedding, [[0, 0], [0, padding], [0, 0]])
-
-    core = tf.contrib.rnn.LSTMBlockCell(64, name='language_lstm')
-    output, _ = tf.nn.dynamic_rnn(core, embedding, length, dtype=tf.float32)
-
-    # Return last output.
-    return tf.reverse_sequence(output, length, seq_axis=1)[:, 0]
-
-  def _torso(self, input_):
-    last_action, env_output = input_
-    reward, _, _, (instruction, frame) = env_output
-
-    frame = tf.to_float(frame)
-    frame /= 255
-
-    with tf.variable_scope('convnet'):
-      conv_out = frame
-      conv_out = snt.Conv2D(32, 8, stride=4)(conv_out)
-      conv_out = tf.nn.relu(conv_out)
-      conv_out = snt.Conv2D(64, 4, stride=2)(conv_out)
-      conv_out = tf.nn.relu(conv_out)
-      conv_out = snt.Conv2D(64, 3, stride=1)(conv_out)
-      conv_out = tf.nn.relu(conv_out)
-
-    conv_out = snt.BatchFlatten()(conv_out)
-    conv_out = snt.Linear(512)(conv_out)
-    conv_out = tf.nn.relu(conv_out)
-    
-    instruction_out = self._instruction(instruction)
-    # Append clipped last reward and one hot last action.
-    clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
-    one_hot_last_action = tf.one_hot(last_action, self._num_actions)
-    return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
-        axis=1)
-
-  def _head(self, core_output):
-    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
-        core_output)
-    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-
-    # Sample an action from the policy.
-    new_action = tf.multinomial(policy_logits, num_samples=1,
-                                output_dtype=tf.int32)
-    new_action = tf.squeeze(new_action, 1, name='new_action')
-
-    return AgentOutput(new_action, policy_logits, baseline)
-
-  def _build(self, input_, core_state):
-    action, env_output = input_
-    actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
-                                              (action, env_output))
-    outputs, core_state = self.unroll(actions, env_outputs, core_state)
-    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
-
-  @snt.reuse_variables
-  def unroll(self, actions, env_outputs, core_state):
-    _, _, done, _ = env_outputs
-
-    torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
-
-    return snt.BatchApply(self._head)(torso_outputs), core_state
-
-
-class ResNetLSTM(snt.RNNCore):
-  
-  def __init__(self, num_actions):
-    super(ResNetLSTM, self).__init__(name='ResNetLSTM')
-
-    self._num_actions = num_actions
-
-    with self._enter_variable_scope():
-      self._core = tf.contrib.rnn.LSTMBlockCell(256)
-
-  def initial_state(self, batch_size):
-     return self._core.zero_state(batch_size, tf.float32)
-
-  def _instruction(self, instruction):
-    # Split string.
-    splitted = tf.string_split(instruction)
-    dense = tf.sparse_tensor_to_dense(splitted, default_value='')
-    length = tf.reduce_sum(tf.to_int32(tf.not_equal(dense, '')), axis=1)
-
-    # To int64 hash buckets. Small risk of having collisions. Alternatively, a
-    # vocabulary can be used.
-    num_hash_buckets = 1000
-    buckets = tf.string_to_hash_bucket_fast(dense, num_hash_buckets)
-
-    # Embed the instruction. Embedding size 20 seems to be enough.
-    embedding_size = 20
-    embedding = snt.Embed(num_hash_buckets, embedding_size)(buckets)
-
-    # Pad to make sure there is at least one output.
-    padding = tf.to_int32(tf.equal(tf.shape(embedding)[1], 0))
-    embedding = tf.pad(embedding, [[0, 0], [0, padding], [0, 0]])
-
-    core = tf.contrib.rnn.LSTMBlockCell(64, name='language_lstm')
-    output, _ = tf.nn.dynamic_rnn(core, embedding, length, dtype=tf.float32)
-
-    # Return last output.
-    return tf.reverse_sequence(output, length, seq_axis=1)[:, 0]
-
-  def _torso(self, input_):
-    last_action, env_output = input_
-    reward, _, _, (frame, instruction) = env_output
-
-    # Convert to floats.
-    frame = tf.to_float(frame)
-
-    frame /= 255
-    with tf.variable_scope('convnet'):
-      conv_out = frame
-      for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
-        # Downscale.
-        conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-        conv_out = tf.nn.pool(
-            conv_out,
-            window_shape=[3, 3],
-            pooling_type='MAX',
-            padding='SAME',
-            strides=[2, 2])
-
-        # Residual block(s).
-        for j in range(num_blocks):
-          with tf.variable_scope('residual_%d_%d' % (i, j)):
-            block_input = conv_out
-            conv_out = tf.nn.relu(conv_out)
-            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-            conv_out = tf.nn.relu(conv_out)
-            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-            conv_out += block_input
-
-    conv_out = tf.nn.relu(conv_out)
-    conv_out = snt.BatchFlatten()(conv_out)
-
-    conv_out = snt.Linear(256)(conv_out)
-    conv_out = tf.nn.relu(conv_out)
-
-    instruction_out = self._instruction(instruction)
-
-    # Append clipped last reward and one hot last action.
-    clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
-    one_hot_last_action = tf.one_hot(last_action, self._num_actions)
-    return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
-        axis=1)
-
-  def _head(self, core_output):
-    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
-        core_output)
-    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-
-    # Sample an action from the policy.
-    new_action = tf.multinomial(policy_logits, num_samples=1,
-                                output_dtype=tf.int32)
-    new_action = tf.squeeze(new_action, 1, name='new_action')
-
-    return AgentOutput(new_action, policy_logits, baseline)
-
-  def _build(self, input_, core_state):
-    action, env_output = input_
-    actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
-                                              (action, env_output))
-    outputs, core_state = self.unroll(actions, env_outputs, core_state)
-    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
-
-  @snt.reuse_variables
-  def unroll(self, actions, env_outputs, core_state):
-    _, _, done, _ = env_outputs
-
-    torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
-
-    # Note, in this implementation we can't use CuDNN RNN to speed things up due
-    # to the state reset. This can be XLA-compiled (LSTMBlockCell needs to be
-    # changed to implement snt.LSTMCell).
-    initial_core_state = self._core.zero_state(tf.shape(actions)[1], tf.float32)
-    core_output_list = []
-    for input_, d in zip(tf.unstack(torso_outputs), tf.unstack(done)):
-      # If the episode ended, the core state should be reset before the next.
-      core_state = nest.map_structure(functools.partial(tf.where, d),
-                                      initial_core_state, core_state)
-      core_output, core_state = self._core(input_, core_state)
-      core_output_list.append(core_output)
-
-    return snt.BatchApply(self._head)(tf.stack(core_output_list)), core_state
+PopArtAgentOutput = collections.namedtuple('PopartAgentOutput',
+                                     'action policy_logits un_normalized_vf normalized_vf')
 
 def shallow_convolution(frame):
     conv_out = frame
@@ -335,10 +122,135 @@ class ImpalaFeedForward(snt.AbstractModule):
 
     return snt.BatchApply(self._head)(torso_outputs)
 
+class ImpalaLSTM(snt.RNNCore):
+
+  """Agent with ResNet."""
+
+  def __init__(self, num_actions):
+    super(ImpalaLSTM, self).__init__(name='impala_lstm')
+
+    self._num_actions = num_actions
+
+    with self._enter_variable_scope():
+      self._core = tf.contrib.rnn.LSTMBlockCell(256)
+
+  def initial_state(self, batch_size):
+     return self._core.zero_state(batch_size, tf.float32)
+
+  def _instruction(self, instruction):
+    # Split string.
+    splitted = tf.string_split(instruction)
+    dense = tf.sparse_tensor_to_dense(splitted, default_value='')
+    length = tf.reduce_sum(tf.to_int32(tf.not_equal(dense, '')), axis=1)
+
+    # To int64 hash buckets. Small risk of having collisions. Alternatively, a
+    # vocabulary can be used.
+    num_hash_buckets = 1000
+    buckets = tf.string_to_hash_bucket_fast(dense, num_hash_buckets)
+
+    # Embed the instruction. Embedding size 20 seems to be enough.
+    embedding_size = 20
+    embedding = snt.Embed(num_hash_buckets, embedding_size)(buckets)
+
+    # Pad to make sure there is at least one output.
+    padding = tf.to_int32(tf.equal(tf.shape(embedding)[1], 0))
+    embedding = tf.pad(embedding, [[0, 0], [0, padding], [0, 0]])
+
+    core = tf.contrib.rnn.LSTMBlockCell(64, name='language_lstm')
+    output, _ = tf.nn.dynamic_rnn(core, embedding, length, dtype=tf.float32)
+
+    # Return last output.
+    return tf.reverse_sequence(output, length, seq_axis=1)[:, 0]
+
+  def _torso(self, input_):
+    last_action, env_output = input_
+    reward, _, _, (frame, instruction) = env_output
+
+    # Convert to floats.
+    frame = tf.to_float(frame)
+
+    frame /= 255
+    with tf.variable_scope('convnet'):
+      conv_out = frame
+      for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
+        # Downscale.
+        conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+        conv_out = tf.nn.pool(
+            conv_out,
+            window_shape=[3, 3],
+            pooling_type='MAX',
+            padding='SAME',
+            strides=[2, 2])
+
+        # Residual block(s).
+        for j in range(num_blocks):
+          with tf.variable_scope('residual_%d_%d' % (i, j)):
+            block_input = conv_out
+            conv_out = tf.nn.relu(conv_out)
+            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+            conv_out = tf.nn.relu(conv_out)
+            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
+            conv_out += block_input
+
+    conv_out = tf.nn.relu(conv_out)
+    conv_out = snt.BatchFlatten()(conv_out)
+
+    conv_out = snt.Linear(256)(conv_out)
+    conv_out = tf.nn.relu(conv_out)
+
+    instruction_out = self._instruction(instruction)
+
+    # Append clipped last reward and one hot last action.
+    clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
+    one_hot_last_action = tf.one_hot(last_action, self._num_actions)
+    return tf.concat(
+        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
+        axis=1)
+
+  def _head(self, core_output):
+    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
+        core_output)
+    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
+
+    # Sample an action from the policy.
+    new_action = tf.multinomial(policy_logits, num_samples=1,
+                                output_dtype=tf.int32)
+    new_action = tf.squeeze(new_action, 1, name='new_action')
+
+    return ImpalaAgentOutput(new_action, policy_logits, baseline)
+
+  def _build(self, input_, core_state):
+    action, env_output = input_
+    actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
+                                              (action, env_output))
+    outputs, core_state = self.unroll(actions, env_outputs, core_state)
+    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
+
+  @snt.reuse_variables
+  def unroll(self, actions, env_outputs, core_state):
+    _, _, done, _ = env_outputs
+
+    torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
+
+    # Note, in this implementation we can't use CuDNN RNN to speed things up due
+    # to the state reset. This can be XLA-compiled (LSTMBlockCell needs to be
+    # changed to implement snt.LSTMCell).
+    initial_core_state = self._core.zero_state(tf.shape(actions)[1], tf.float32)
+    core_output_list = []
+    for input_, d in zip(tf.unstack(torso_outputs), tf.unstack(done)):
+      # If the episode ended, the core state should be reset before the next.
+      core_state = nest.map_structure(functools.partial(tf.where, d),
+                                      initial_core_state, core_state)
+      core_output, core_state = self._core(input_, core_state)
+      core_output_list.append(core_output)
+
+    return snt.BatchApply(self._head)(tf.stack(core_output_list)), core_state
+
+
 class PopArtFeedForward(snt.AbstractModule):
     def __init__(self, num_actions):
         super(PopArtFeedForward, self).__init__(name="popart_feed_forward")
-        self._number_of_games = len(utilities_atari.ATARI_GAMES.keys())
+        self._number_of_games = len(atari_utilities.ATARI_GAMES.keys())
         self._num_actions  = num_actions
         self._mean         = tf.get_variable("mean", dtype=tf.float32, initializer=tf.tile(tf.constant([0.0]), multiples=[self._number_of_games]), trainable=False)
         self._mean_squared = tf.get_variable("mean_squared", dtype=tf.float32, initializer=tf.tile(tf.constant([1.0]), multiples=[self._number_of_games]), trainable=False)
@@ -384,7 +296,7 @@ class PopArtFeedForward(snt.AbstractModule):
                                     output_dtype=tf.int32)
         new_action = tf.squeeze(new_action, [1], name='new_action')
 
-        return AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf) 
+        return PopArtAgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf) 
 
     def _build(self, input_):
         action, env_output = input_
@@ -454,125 +366,7 @@ class PopArtFeedForward(snt.AbstractModule):
 
         return new_mean, new_mean_squared
 
-class ImpalaLSTM(snt.RNNCore):
-  """Agent with ResNet."""
 
-  def __init__(self, num_actions):
-    super(ImpalaLSTM, self).__init__(name='impala_lstm')
-
-    self._num_actions = num_actions
-
-    with self._enter_variable_scope():
-      self._core = tf.contrib.rnn.LSTMBlockCell(256)
-
-  def initial_state(self, batch_size):
-    return self._core.zero_state(batch_size, tf.float32)
-
-  def _instruction(self, instruction):
-    # Split string.
-    splitted = tf.string_split(instruction)
-    dense = tf.sparse_tensor_to_dense(splitted, default_value='')
-    length = tf.reduce_sum(tf.to_int32(tf.not_equal(dense, '')), axis=1)
-
-    # To int64 hash buckets. Small risk of having collisions. Alternatively, a
-    # vocabulary can be used.
-    num_hash_buckets = 1000
-    buckets = tf.string_to_hash_bucket_fast(dense, num_hash_buckets)
-
-    # Embed the instruction. Embedding size 20 seems to be enough.
-    embedding_size = 20
-    embedding = snt.Embed(num_hash_buckets, embedding_size)(buckets)
-
-    # Pad to make sure there is at least one output.
-    padding = tf.to_int32(tf.equal(tf.shape(embedding)[1], 0))
-    embedding = tf.pad(embedding, [[0, 0], [0, padding], [0, 0]])
-
-    core = tf.contrib.rnn.LSTMBlockCell(64, name='language_lstm')
-    output, _ = tf.nn.dynamic_rnn(core, embedding, length, dtype=tf.float32)
-
-    # Return last output.
-    return tf.reverse_sequence(output, length, seq_axis=1)[:, 0]
-
-  def _torso(self, input_):
-    last_action, env_output = input_
-    reward, _, _, (instruction, frame) = env_output
-
-    # Convert to floats.
-    frame = tf.to_float(frame)
-
-    frame /= 255
-    with tf.variable_scope('convnet'):
-        conv_out = frame
-        for i, (num_ch, num_blocks) in enumerate([(16, 2), (32, 2), (32, 2)]):
-            # Downscale.
-            conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-            conv_out = tf.nn.pool(
-            conv_out,
-            window_shape=[3, 3],
-            pooling_type='MAX',
-            padding='SAME',
-            strides=[2, 2])
-            # Residual block(s).
-            for j in range(num_blocks):
-                with tf.variable_scope('residual_%d_%d' % (i, j)):
-                    block_input = conv_out
-                    conv_out = tf.nn.relu(conv_out)
-                    conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-                    conv_out = tf.nn.relu(conv_out)
-                    conv_out = snt.Conv2D(num_ch, 3, stride=1, padding='SAME')(conv_out)
-                    conv_out += block_input
-    conv_out = tf.nn.relu(conv_out)
-    conv_out = snt.BatchFlatten()(conv_out)
-
-    conv_out = snt.Linear(256)(conv_out)
-    conv_out = tf.nn.relu(conv_out)
-
-    instruction_out = self._instruction(instruction)
-
-    # Append clipped last reward and one hot last action.
-    clipped_reward = tf.expand_dims(tf.clip_by_value(reward, -1, 1), -1)
-    one_hot_last_action = tf.one_hot(last_action, self._num_actions)
-    return tf.concat(
-        [conv_out, clipped_reward, one_hot_last_action, instruction_out],
-        axis=1)
-
-  def _head(self, core_output):
-    policy_logits = snt.Linear(self._num_actions, name='policy_logits')(
-        core_output)
-    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
-    # Sample an action from the policy.
-    new_action = tf.multinomial(policy_logits, num_samples=1,
-                                output_dtype=tf.int32)
-    new_action = tf.squeeze(new_action, 1, name='new_action')
-
-    return ImpalaAgentOutput(new_action, policy_logits, baseline)
-
-  def _build(self, input_, core_state):
-    action, env_output = input_
-    actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
-                                              (action, env_output))
-    outputs, core_state = self.unroll(actions, env_outputs, core_state)
-    return nest.map_structure(lambda t: tf.squeeze(t, 0), outputs), core_state
-
-  @snt.reuse_variables
-  def unroll(self, actions, env_outputs, core_state):
-    _, _, done, _ = env_outputs
-
-    torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
-
-    # Note, in this implementation we can't use CuDNN RNN to speed things up due
-    # to the state reset. This can be XLA-compiled (LSTMBlockCell needs to be
-    # changed to implement snt.LSTMCell).
-    initial_core_state = self._core.zero_state(tf.shape(actions)[1], tf.float32)
-    core_output_list = []
-    for input_, d in zip(tf.unstack(torso_outputs), tf.unstack(done)):
-      # If the episode ended, the core state should be reset before the next.
-      core_state = nest.map_structure(functools.partial(tf.where, d),
-                                      initial_core_state, core_state)
-      core_output, core_state = self._core(input_, core_state)
-      core_output_list.append(core_output)
-
-    return snt.BatchApply(self._head)(tf.stack(core_output_list)), core_state
 
 class PopArtLSTM(snt.RNNCore):
 
@@ -679,8 +473,7 @@ class PopArtLSTM(snt.RNNCore):
                                     output_dtype=tf.int32)
 
         new_action = tf.squeeze(new_action, 1, name='new_action')
-        output = AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
-        # impala_output = ImpalaAgentOutput(new_action, policy_logits, baseline)
+        output = PopArtAgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf)
         return output
 
     def _build(self, input_, core_state):
@@ -772,8 +565,6 @@ def agent_factory(agent_name):
     'ImpalaFeedForward'.lower(): ImpalaFeedForward,
     'PopArtFeedForward'.lower(): PopArtFeedForward,
     'ImpalaLSTM'.lower(): ImpalaLSTM,
-    'ResNetLSTM'.lower(): ResNetLSTM,
-    'SimpleConvNet'.lower(): SimpleConvNet,
     'PopArtLSTM'.lower(): PopArtLSTM
   }
 
