@@ -132,7 +132,7 @@ class AtariResNetLSTM(snt.RNNCore):
   """Agent with ResNet."""
 
   def __init__(self, num_actions):
-    super(AtariResNetLSTMAgent, self).__init__(name='resnet_lstm_agent')
+    super(AtariResNetLSTM, self).__init__(name='resnet_lstm_agent')
 
     self._num_actions = num_actions
 
@@ -661,6 +661,7 @@ class PopArtLSTM(snt.RNNCore):
 def agent_factory(agent_name):
   specific_agent = {
     'ImpalaFeedForward'.lower(): ImpalaFeedForward,
+    'AtariResNetLSTM'.lower(): AtariResNetLSTM,
     'PopArtFeedForward'.lower(): PopArtFeedForward,
     'DMLabImpalaLSTM'.lower(): DMLabImpalaLSTM,
     'PopArtLSTM'.lower(): PopArtLSTM
