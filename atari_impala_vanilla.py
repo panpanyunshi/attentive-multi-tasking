@@ -402,7 +402,6 @@ def train(action_set, level_names):
         level_name = level_names[i % len(level_names)]
         tf.logging.info('Creating actor %d with level %s', i, level_name)
         env = create_atari_environment(level_name, seed=i + 1)
-        tf.logging.info('Current game: {} with action set: {}'.format(level_name, action_set))
         actor_output = build_actor(agent, env, level_name, action_set)
         with tf.device(shared_job_device):
           enqueue_ops.append(queue.enqueue(nest.flatten(actor_output)))
