@@ -11,7 +11,8 @@ import os
 import sys
 #from more_itertools import one 
 import utilities_atari
-import atari_environment
+# import atari_environment
+import env_no_pp as atari_environment
 import numpy as np
 import py_process
 import sonnet as snt
@@ -119,7 +120,7 @@ def build_actor(agent, env, level_name, action_set):
   # Initial values.
   initial_env_output, initial_env_state = env.initial()
   # initial_agent_state = agent.initial_state(1)
-
+  print("initial_env: ", initial_env_output)
   initial_action = tf.zeros([1], dtype=tf.int32)
   dummy_agent_output = agent((initial_action, nest.map_structure(lambda t: tf.expand_dims(t, 0), initial_env_output)))
   initial_agent_output = nest.map_structure(
@@ -186,17 +187,11 @@ def build_actor(agent, env, level_name, action_set):
         lambda first, rest: tf.concat([[first], rest], 0),
         (first_agent_output, first_env_output), (agent_outputs, env_outputs))
 
-    # Removed for now 
-    # Use the extra state information if it's the LSTM agent
-    # if hasattr(initial_agent_state, 'c') and hasattr(initial_agent_state, 'h'):
-    #   output = ActorOutput(
-    #       level_name=level_name, agent_state=first_agent_state,
-    #       env_outputs=full_env_outputs, agent_outputs=full_agent_outputs)
-    
     output = ActorOutputFeedForward(
         level_name=level_name, 
         env_outputs=full_env_outputs,
         agent_outputs=full_agent_outputs)
+
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
@@ -300,18 +295,13 @@ def build_learner(agent, env_outputs, agent_outputs, global_step):
 
 def create_atari_environment(env_id, seed, is_test=False):
 
-  config = {
-      'width': FLAGS.width,
-      'height': FLAGS.height
-  }
-
   if is_test:
     config['allowHoldOutLevels'] = 'true'
     # Mixer seed for evalution, see
     # https://github.com/deepmind/lab/blob/master/docs/users/python_api.md
     config['mixerSeed'] = 0x600D5EED
 
-  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id, config)
+  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id)
   proxy_env = atari_environment.FlowEnvironment(process.proxy)
   return proxy_env
 
@@ -377,7 +367,7 @@ def train(action_set, level_names):
 
     # Create Queue and Agent on the learner.
     with tf.device(shared_job_device):
-      queue = tf.FIFOQueue(1, dtypes, shapes, shared_name='buffer')
+      queue = tf.FIFOQueue(96, dtypes, shapes, shared_name='buffer')
       agent = Agent(len(action_set))
 
       if is_single_machine() and 'dynamic_batching' in sys.modules:
@@ -402,9 +392,9 @@ def train(action_set, level_names):
         level_name = level_names[i % len(level_names)]
         tf.logging.info('Creating actor %d with level %s', i, level_name)
         env = create_atari_environment(level_name, seed=i + 1)
-        tf.logging.info('Current game: {} with action set: {}'.format(level_name, action_set))
         actor_output = build_actor(agent, env, level_name, action_set)
         with tf.device(shared_job_device):
+          # with tf.control_dependencies([tf.print([tf.convert_to_tensor(["enqueue: "]), queue.size()])]):
           enqueue_ops.append(queue.enqueue(nest.flatten(actor_output)))
 
     # If running in a single machine setup, run actors with QueueRunners
@@ -461,6 +451,7 @@ def train(action_set, level_names):
     config.gpu_options.allow_growth = True
     # config.gpu_options.per_process_gpu_memory_fraction = 0.8
     logdir = FLAGS.logdir
+    # dequeue_print = tf.print([tf.convert_to_tensor(["dequeue: "]), queue.size()])
     
     with tf.train.MonitoredTrainingSession(
         server.target,
@@ -496,12 +487,12 @@ def train(action_set, level_names):
           level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
           total_episode_frames = num_env_frames_v
 
-          for level_name, episode_return, episode_step, acc_episode_reward, acc_episode_step in zip(
+          for level_name, episode_return, episode_step in zip(
               level_names_v[done_v],
               infos_v.episode_return[done_v],
-              infos_v.episode_step[done_v],
-              infos_v.acc_episode_reward[done_v],
-              infos_v.acc_episode_step[done_v]):
+              infos_v.episode_step[done_v]):
+              # infos_v.acc_episode_reward[done_v],
+              # infos_v.acc_episode_step[done_v]):
 
             episode_frames = episode_step * FLAGS.num_action_repeats
 
@@ -514,10 +505,10 @@ def train(action_set, level_names):
                               simple_value=episode_return)
             summary.value.add(tag=level_name + '/episode_frames',
                               simple_value=episode_frames)
-            summary.value.add(tag=level_name + '/acc_episode_return',
-                                simple_value=acc_episode_reward)
-            summary.value.add(tag=level_name + '/acc_episode_frames',
-                                simple_value=acc_episode_step)
+            # summary.value.add(tag=level_name + '/acc_episode_return',
+            #                     simple_value=acc_episode_reward)
+            # summary.value.add(tag=level_name + '/acc_episode_frames',
+            #                     simple_value=acc_episode_step)
             summary_writer.add_summary(summary, num_env_frames_v)
 
             level_returns[level_name].append(episode_return)

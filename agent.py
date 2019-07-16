@@ -88,9 +88,11 @@ class ImpalaFeedForward(snt.AbstractModule):
 
     with tf.variable_scope('convnet'):
       conv_out = frame
-      conv_out = snt.Conv2D(16, 8, stride=4)(conv_out)
+      conv_out = snt.Conv2D(16, 8, stride=4, padding="VALID")(conv_out)
+      print("CONV OUT 1: ", conv_out)
       conv_out = tf.nn.relu(conv_out)
-      conv_out = snt.Conv2D(32, 4, stride=2)(conv_out)
+      conv_out = snt.Conv2D(32, 4, stride=2, padding="VALID")(conv_out)
+      print("CONV OUT 2: ", conv_out)
 
     conv_out = tf.nn.relu(conv_out)
     conv_out = snt.BatchFlatten()(conv_out)

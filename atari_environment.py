@@ -35,7 +35,8 @@ StepOutput = collections.namedtuple('StepOutput',
                                     'reward info done observation')
 
 action_set = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15 ,16 ,17]
-# To convert the shape from (84, 84, 4) -> (4, 84, 84)
+
+
 class TransposeWrapper(gym.ObservationWrapper):
   def observation(self, observation):
     transposed_obs = np.transpose(np.array(observation), axes=(2, 0, 1))
@@ -44,11 +45,12 @@ class TransposeWrapper(gym.ObservationWrapper):
 def create_env(env_id, episode_life=True, clip_rewards=False, frame_stack=True, scale=False):
   env = make_atari(env_id)
   env = wrap_deepmind(env, episode_life, clip_rewards, frame_stack, scale)
-  env = TransposeWrapper(env)
+  # env = TransposeWrapper(env)
   return env
 
 def get_observation_spec(env_id):
-  env = create_env(env_id)
+  # env = create_env(env_id)
+  env = gym.make(env_id)
   obs_shape = env.observation_space.shape
   return obs_shape
 
@@ -58,8 +60,10 @@ def get_action_set(level_name):
 
 class PyProcessAtari(object):
 
-    def __init__(self, env_id, config):
-      self._env = create_env(env_id)
+    def __init__(self, env_id):
+      # self._env = create_env(env_id)
+      self._env = gym.make(env_id)
+      print("env: ", self._env.observation_space)
       
     def _reset(self):
       return self._env.reset()
@@ -68,7 +72,9 @@ class PyProcessAtari(object):
       return observation.swapaxes(2, 0)
 
     def initial(self):
-      initial_obs = self._transpose_obs(self._reset())
+      # initial_obs = self._transpose_obs(self._reset())
+      initial_obs = self._reset()
+      print("Initial obs: ", initial_obs.shape)
       return initial_obs
 
     def step(self, action):
@@ -82,7 +88,10 @@ class PyProcessAtari(object):
         obs = self._reset() 
       
       reward = np.float32(reward)
-      obs = self._transpose_obs(obs)
+
+      print("Before transpose: ", obs)
+      # obs = self._transpose_obs(obs)
+      # print("After transpose: ", obs.shape)
       acc_raw_reward = np.float32(info['acc_raw_reward'])
       acc_raw_step = np.int32(info['acc_raw_step'])
       return reward, is_done, obs, acc_raw_reward, acc_raw_step
