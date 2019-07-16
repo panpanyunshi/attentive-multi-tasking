@@ -45,12 +45,11 @@ class TransposeWrapper(gym.ObservationWrapper):
 def create_env(env_id, episode_life=True, clip_rewards=False, frame_stack=True, scale=False):
   env = make_atari(env_id)
   env = wrap_deepmind(env, episode_life, clip_rewards, frame_stack, scale)
-  # env = TransposeWrapper(env)
+  env = TransposeWrapper(env)
   return env
 
 def get_observation_spec(env_id):
-  # env = create_env(env_id)
-  env = gym.make(env_id)
+  env = create_env(env_id)
   obs_shape = env.observation_space.shape
   return obs_shape
 
@@ -61,9 +60,8 @@ def get_action_set(level_name):
 class PyProcessAtari(object):
 
     def __init__(self, env_id):
-      # self._env = create_env(env_id)
-      self._env = gym.make(env_id)
-      print("env: ", self._env.observation_space)
+      self._env = create_env(env_id)
+      # self._env = gym.make(env_id)
       
     def _reset(self):
       return self._env.reset()
@@ -72,9 +70,7 @@ class PyProcessAtari(object):
       return observation.swapaxes(2, 0)
 
     def initial(self):
-      # initial_obs = self._transpose_obs(self._reset())
-      initial_obs = self._reset()
-      print("Initial obs: ", initial_obs.shape)
+      initial_obs = self._transpose_obs(self._reset())
       return initial_obs
 
     def step(self, action):
@@ -89,8 +85,8 @@ class PyProcessAtari(object):
       
       reward = np.float32(reward)
 
-      print("Before transpose: ", obs)
-      # obs = self._transpose_obs(obs)
+      # print("Before transpose: ", obs)
+      obs = self._transpose_obs(obs)
       # print("After transpose: ", obs.shape)
       acc_raw_reward = np.float32(info['acc_raw_reward'])
       acc_raw_step = np.int32(info['acc_raw_step'])
