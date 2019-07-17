@@ -26,7 +26,7 @@ except tf.errors.NotFoundError:
   tf.logging.warning('Running without dynamic batching.')
 
 from six.moves import range
-
+from tensorflow.python.client import timeline
 nest = tf.contrib.framework.nest
 
 flags = tf.app.flags
@@ -44,7 +44,7 @@ flags.DEFINE_enum('job_name', 'learner', ['learner', 'actor'],
                   'Job name. Ignored when task is set to -1.')
 
 # Agent
-flags.DEFINE_string('agent_name', 'ImpalaFeedForwardAgent', 'Which learner to use')
+flags.DEFINE_string('agent_name', 'ImpalaFeedForward', 'Which learner to use')
 
 # Atari environments
 flags.DEFINE_integer('width', 84, 'Width of observation')
@@ -371,7 +371,7 @@ def train(action_set, level_names):
     shapes = [t.shape.as_list() for t in flattened_structure]
 
   with tf.Graph().as_default(), \
-       tf.device(local_job_device + '/gpu'), \
+       tf.device(local_job_device + '/cpu'), \
        pin_global_variables(global_variable_device):
     tf.set_random_seed(1)  # Makes initialization deterministic.
 
@@ -402,7 +402,6 @@ def train(action_set, level_names):
         level_name = level_names[i % len(level_names)]
         tf.logging.info('Creating actor %d with level %s', i, level_name)
         env = create_atari_environment(level_name, seed=i + 1)
-        tf.logging.info('Current game: {} with action set: {}'.format(level_name, action_set))
         actor_output = build_actor(agent, env, level_name, action_set)
         with tf.device(shared_job_device):
           enqueue_ops.append(queue.enqueue(nest.flatten(actor_output)))
@@ -460,7 +459,7 @@ def train(action_set, level_names):
     config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters) 
     config.gpu_options.allow_growth = True
     # config.gpu_options.per_process_gpu_memory_fraction = 0.8
-    logdir = "impala-multi-task"
+    logdir = FLAGS.logdir 
     
     with tf.train.MonitoredTrainingSession(
         server.target,
