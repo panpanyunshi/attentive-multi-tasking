@@ -59,6 +59,7 @@ flags.DEFINE_integer('unroll_length', 20, 'Unroll length in agent steps.')
 flags.DEFINE_integer('num_action_repeats', 4, 'Number of action repeats.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
 flags.DEFINE_string('level_name', 'PongNoFrameskip-v4', 'level name')
+flags.DEFINE_integer('queue_size', 1, 'Tensorflow queue size')
 
 # flags.DEFINE_string('all_games', ['SeaquestNoFrameskip-v4', 'BreakoutNoFrameskip-v4'], 'all games')
 
@@ -377,7 +378,7 @@ def train(action_set, level_names):
 
     # Create Queue and Agent on the learner.
     with tf.device(shared_job_device):
-      queue = tf.FIFOQueue(1, dtypes, shapes, shared_name='buffer')
+      queue = tf.FIFOQueue(FLAGS.queue_size, dtypes, shapes, shared_name='buffer')
       agent = Agent(len(action_set))
 
       if is_single_machine() and 'dynamic_batching' in sys.modules:
@@ -460,7 +461,7 @@ def train(action_set, level_names):
     config.gpu_options.allow_growth = True
     # config.gpu_options.per_process_gpu_memory_fraction = 0.8
     logdir = FLAGS.logdir 
-    
+ 
     with tf.train.MonitoredTrainingSession(
         server.target,
         is_chief=is_learner,
