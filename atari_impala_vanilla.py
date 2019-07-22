@@ -60,6 +60,7 @@ flags.DEFINE_integer('num_action_repeats', 4, 'Number of action repeats.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
 flags.DEFINE_string('level_name', 'PongNoFrameskip-v4', 'level name')
 flags.DEFINE_integer('queue_size', 1, 'Tensorflow queue size')
+flags.DEFINE_integer('multi_task', 0, 'Indicator of multi-task')
 
 # flags.DEFINE_string('all_games', ['SeaquestNoFrameskip-v4', 'BreakoutNoFrameskip-v4'], 'all games')
 
@@ -525,7 +526,15 @@ def train(action_set, level_names):
             # tf.logging.info('total return %f last %d frames', 
             #                 total_episode_return, average_frames)
           current_episode_return_list = min(map(len, level_returns.values())) 
-          if current_episode_return_list >= 1:
+          if FLAGS.multi_task == 1 and current_episode_return_list >= 1:
+            def sum_none(list_):
+              if list_:
+                return sum(list_)
+              else:
+                return None
+            
+            level_returns = {level_name: sum_none(level_returns[level_name]) for level_name in level_names}
+            
             no_cap = utilities_atari.compute_human_normalized_score(level_returns,
                                                             per_level_cap=None)
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
@@ -596,12 +605,18 @@ def test(action_set, level_names):
 def main(_):
     tf.logging.set_verbosity(tf.logging.INFO)
     action_set = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15 ,16, 17] 
-    level_names = games
-    print(level_names)
-    if FLAGS.mode == 'train':
-      train(action_set, level_names) 
+    if FLAGS.multi_task == 1 and FLAGS.mode == 'train':
+      level_names = utilities_atari.ATARI_GAMES.keys()
+    elif FLAGS.multi_task == 1 and FLAGS.mode == 'test':
+      level_names = utilities_atari.ATARI_GAMES.values()
     else:
-      test(action_set, [FLAGS.level_name])
+      level_names = [FLAGS.level_name]
+      action_set = atari_environment.get_action_set(FLAGS.level_name)
+
+    if FLAGS.mode == 'train':
+      train(action_set, level_names)
+    else:
+      test(action_set, level_names)
 
 if __name__ == '__main__':
     tf.app.run()    
