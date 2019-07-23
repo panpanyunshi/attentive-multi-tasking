@@ -487,7 +487,8 @@ def train(action_set, level_names):
         # Execute learning and track performance.
         num_env_frames_v = 0
         total_episode_frames = 0
-        
+        print("total params:", np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
+
         # Log the total return every *average_frames*.  
         total_episode_return = 0.0
         while num_env_frames_v < FLAGS.total_environment_frames:
@@ -534,7 +535,6 @@ def train(action_set, level_names):
                 return None
             
             level_returns = {level_name: sum_none(level_returns[level_name]) for level_name in level_names}
-            
             no_cap = utilities_atari.compute_human_normalized_score(level_returns,
                                                             per_level_cap=None)
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
