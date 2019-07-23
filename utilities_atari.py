@@ -278,7 +278,7 @@ def _transform_level_returns(level_returns):
 
   for level_name, returns in new_level_returns.iteritems():
     if level_name in test_set:
-      if not returns:
+      if returns == None:
         raise ValueError('Missing returns for level: \'%s\': ' % level_name)
     else:
       tf.logging.info('Skipping level %s for calculation.', level_name)
