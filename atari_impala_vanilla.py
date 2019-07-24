@@ -486,10 +486,8 @@ def train(action_set, level_names):
 
         # Execute learning and track performance.
         num_env_frames_v = 0
-        total_episode_frames = 0
+        print("total params:", np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
         
-        # Log the total return every *average_frames*.  
-        total_episode_return = 0.0
         while num_env_frames_v < FLAGS.total_environment_frames:
           level_names_v, done_v, infos_v, num_env_frames_v, _ = session.run(
               (data_from_actors.level_name,) + output + (stage_op,))
@@ -582,7 +580,7 @@ def test(action_set, level_names):
           if len(returns) >= FLAGS.test_num_episodes:
             tf.logging.info('Mean episode return: %f', np.mean(returns))
             break
-  print("LEVEL RETURNS: ", level_returns)
+  
   no_cap = utilities_atari.compute_human_normalized_score(level_returns,
                                                   per_level_cap=None)
   cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
