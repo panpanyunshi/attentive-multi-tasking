@@ -153,10 +153,11 @@ class PopArtFeedForward(snt.AbstractModule):
 
         # Matching PNN's architecture       
         with tf.variable_scope('convnet'):
-            conv_out = pnn_convolution(frame)
+            conv_out = res_net_convolution(frame)
 
         conv_out = tf.nn.relu(conv_out)
         conv_out = snt.BatchFlatten()(conv_out)
+
         conv_out = snt.Linear(256)(conv_out)
         conv_out = tf.nn.relu(conv_out)
 
@@ -169,9 +170,8 @@ class PopArtFeedForward(snt.AbstractModule):
 
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(torso_output)
         linear = snt.Linear(self._number_of_games, name='baseline')
-        last_linear_layer_vf = linear(torso_output)
+        normalized_vf  = linear(torso_output)
 
-        normalized_vf = last_linear_layer_vf
         un_normalized_vf = self._std * normalized_vf + self._mean
 
         # Sample an action from the policy.
