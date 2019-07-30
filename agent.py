@@ -194,9 +194,9 @@ class SelfAttentionSubnet(snt.AbstractModule):
   def _head(self, core_output):
     core_output, level_name = core_output
     # Using a shared value function first.
-    baseline_games = snt.Linear(1)(core_output)
+    #baseline_games = snt.Linear(1)(core_output)
     # Then multiple value functions to account for the different scalings of rewards in different games.   
-    baseline_games = snt.Linear(self._number_of_games)(baseline_games)
+    baseline_games = snt.Linear(self._number_of_games)(core_output)
   
     # adding time dimension
     level_name     = tf.reshape(level_name, [-1, 1, 1])
