@@ -87,7 +87,6 @@ games = utilities_atari.ATARI_GAMES.keys()
 for i, game in enumerate(games):
   game_id[game] = i
 
-print("GAMES: ", game_id)
 def is_single_machine():
     return FLAGS.task == -1
 
@@ -183,13 +182,6 @@ def build_actor(agent, env, level_name, action_set):
     full_agent_outputs, full_env_outputs = nest.map_structure(
         lambda first, rest: tf.concat([[first], rest], 0),
         (first_agent_output, first_env_output), (agent_outputs, env_outputs))
-
-    # Removed for now 
-    # Use the extra state information if it's the LSTM agent
-    # if hasattr(initial_agent_state, 'c') and hasattr(initial_agent_state, 'h'):
-    #   output = ActorOutput(
-    #       level_name=level_name, agent_state=first_agent_state,
-    #       env_outputs=full_env_outputs, agent_outputs=full_agent_outputs)
     
     output = ActorOutputFeedForward(
         level_name=level_name, 
@@ -291,7 +283,7 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
   baseline_loss = compute_baseline_loss(
        normalized_vtrace - learner_outputs.normalized_vf)
   # Using the average GvT 
-  baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
+  # baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
 
   total_loss += FLAGS.baseline_cost * baseline_loss
   total_loss += FLAGS.entropy_cost * compute_entropy_loss(
@@ -308,12 +300,9 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
 
   # Use reward clipping for atari games only 
   if FLAGS.gradient_clipping > 0.0:
-    # gradients, variables = zip(*optimizer.compute_gradients(total_loss))
     variables = tf.trainable_variables()
     gradients = tf.gradients(total_loss, variables)
-    # print("VARIABLES: ", variables)
     gradients, _ = tf.clip_by_global_norm(gradients, FLAGS.gradient_clipping)
-    print("GRADIENTS: ", gradients)
     train_op = optimizer.apply_gradients(zip(gradients, variables))
   else:
     train_op = optimizer.minimize(total_loss)
@@ -488,9 +477,6 @@ def train(action_set, level_names):
         # Converting the tensor of level names to a normal integer used for indexing. 
         level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
         level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
-        # If LSTM agent, we use the hidden states
-        # if hasattr(data_from_actors, 'agent_state'):
-        #   agent_state = data_from_actors.agent_state
 
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent,
@@ -515,7 +501,6 @@ def train(action_set, level_names):
       if is_learner:
         # Logging.
         level_returns = {level_name: [] for level_name in level_names}
-        total_level_returns = {level_name: 0.0 for level_name in level_names}
         summary_dir = os.path.join(FLAGS.logdir, "logging")
         summary_writer = tf.summary.FileWriterCache.get(summary_dir)
 
@@ -525,10 +510,8 @@ def train(action_set, level_names):
 
         # Execute learning and track performance.
         num_env_frames_v = 0
-        total_episode_frames = 0
         
         # Log the total return every *average_frames*.  
-        average_frames = 24000 
         # total_episode_return = 0.0
         while num_env_frames_v < FLAGS.total_environment_frames:
           level_names_v, done_v, infos_v, num_env_frames_v, mean, _, std, _ = session.run(
@@ -558,9 +541,9 @@ def train(action_set, level_names):
                                 simple_value=acc_episode_reward)
             summary.value.add(tag=level_name + '/acc_episode_frames',
                                 simple_value=acc_episode_step)
-            summary.value.add(tag=level_name + '/env_mean', 
+            summary.value.add(tag=level_name + '/game_mean', 
                               simple_value=mean[game_id[level_name]])
-            summary.value.add(tag=level_name + '/env_std',
+            summary.value.add(tag=level_name + '/game_std',
                               simple_value=std[game_id[level_name]])
             summary_writer.add_summary(summary, num_env_frames_v)
 
