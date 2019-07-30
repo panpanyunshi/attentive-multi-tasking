@@ -532,7 +532,6 @@ def train(action_set, level_names):
                 return None
             
             level_returns = {level_name: sum_none(level_returns[level_name]) for level_name in level_names}
-            
             no_cap = utilities_atari.compute_human_normalized_score(level_returns,
                                                             per_level_cap=None)
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,
