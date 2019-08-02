@@ -161,14 +161,14 @@ class SelfAttentionSubnet(snt.AbstractModule):
         # Problem with the FC layer is that it cannot generalize across positions. 
         # Unique connections are not generalizable. Keeps the dimensions constant. 
         # Using max pool to generalize better. 
-        max_d_out = snt.Conv2D(max_d, 3, stride=2)(conv_out)
-        max_d_out = tf.keras.layers.GlobalMaxPool2D()(max_d_out)
-        max_d_out = tf.nn.relu(max_d_out)
+        # max_d_out = snt.Conv2D(max_d, 3, stride=2)(conv_out)
+        # max_d_out = tf.keras.layers.GlobalMaxPool2D()(max_d_out)
+        # max_d_out = tf.nn.relu(max_d_out)
         conv_out  = snt.BatchFlatten()(conv_out)
         
-        fc_out    = snt.Linear(256 - max_d)(conv_out)
+        fc_out    = snt.Linear(256)(conv_out)
         fc_out    = tf.nn.relu(fc_out)
-        fc_out    = tf.concat([fc_out, max_d_out], axis=-1)
+        # fc_out    = tf.concat([fc_out, max_d_out], axis=-1)
         fc_out    = tf.expand_dims(fc_out, axis=1)
 
         conv_out  = tf.concat(values=[conv_out, tau], axis=1)
@@ -194,9 +194,9 @@ class SelfAttentionSubnet(snt.AbstractModule):
   def _head(self, core_output):
     core_output, level_name = core_output
     # Using a shared value function first.
-    baseline_games = snt.Linear(1)(core_output)
+    # baseline_games = snt.Linear(1)(core_output)
     # Then multiple value functions to account for the different scalings of rewards in different games.   
-    baseline_games = snt.Linear(self._number_of_games)(baseline_games)
+    baseline_games = snt.Linear(self._number_of_games)(core_output)
   
     # adding time dimension
     level_name     = tf.reshape(level_name, [-1, 1, 1])
