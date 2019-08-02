@@ -199,8 +199,7 @@ class PopArtFeedForward(snt.AbstractModule):
     def update_moments(self, vs, env_id):
         """
         This function computes the adaptive normalization statistics for the actor and critic updates
-        while preserving the outputs (PopArt) according to (Hessel et al., 2018). 
-        https://arxiv.org/abs/1809.04474
+        while preserving the outputs (PopArt)
 
         Args: 
             vs:     Vtrace corrected value estimates. 
