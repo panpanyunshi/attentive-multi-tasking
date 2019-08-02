@@ -83,7 +83,7 @@ ActorOutput = collections.namedtuple(
     'ActorOutput', 'level_name agent_state env_outputs agent_outputs')
 
 ActorOutputFeedForward = collections.namedtuple(
-    'ActorOutputFeedForward', 'level_name env_outputs agent_outputs')
+    'ActorOutputFeedForward', 'level_name level_id env_outputs agent_outputs')
 
 
 # Used to map the level name -> number for indexation
@@ -192,6 +192,7 @@ def build_actor(agent, env, level_name, action_set):
 
     output = ActorOutputFeedForward(
         level_name=level_name, 
+        level_id=game_id[level_name],
         env_outputs=full_env_outputs,
         agent_outputs=full_agent_outputs)
     # No backpropagation should be done here.
@@ -199,7 +200,6 @@ def build_actor(agent, env, level_name, action_set):
 
 def build_learner(agent, env_outputs, agent_outputs, global_step, levels_index):
   """Builds the learner loop.
-
   Args:
     agent: A snt.RNNCore module outputting `AgentOutput` named tuples, with an
       `unroll` call for computing the outputs for a whole trajectory.
@@ -210,7 +210,6 @@ def build_learner(agent, env_outputs, agent_outputs, global_step, levels_index):
       [T+1, ...].
     global_step: The current time step T. 
     levels_index: The current level names aspython integers for the current batch. 
-
   Returns:
     A tuple of (done, infos, and environment frames) where
     the environment frames tensor causes an update.
@@ -444,9 +443,9 @@ def train(action_set, level_names):
         # Returns an ActorOutput tuple -> (level name, agent_state, env_outputs, agent_output)
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
-        levels_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
-        levels_index = tf.reshape(levels_index, [FLAGS.batch_size])
-
+        # levels_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32, parallel_iterations=56)
+        # levels_index = tf.reshape(levels_index, [FLAGS.batch_size])
+        levels_index = data_from_actors.level_id
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent,
                                data_from_actors.env_outputs,
@@ -488,8 +487,6 @@ def train(action_set, level_names):
               (data_from_actors.level_name,) + output + (stage_op,))
 
           level_names_v = np.repeat([level_names_v], done_v.shape[0], 0)
-          total_episode_frames = num_env_frames_v
-          # print("STAGE OP: ", stage_op)
           for level_name, episode_return, episode_step, acc_episode_reward, acc_episode_step in zip(
               level_names_v[done_v],
               infos_v.episode_return[done_v],
@@ -498,7 +495,6 @@ def train(action_set, level_names):
               infos_v.acc_episode_step[done_v]):
 
             episode_frames = episode_step * FLAGS.num_action_repeats
-            run_metadata = tf.RunMetadata()
             tf.logging.info('Level: %s Episode return: %f after %d frames',
                             level_name, episode_return, num_env_frames_v)
             
