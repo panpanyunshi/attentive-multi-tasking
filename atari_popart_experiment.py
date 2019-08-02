@@ -78,7 +78,7 @@ ActorOutput = collections.namedtuple(
     'ActorOutput', 'level_name agent_state env_outputs agent_outputs')
 
 ActorOutputFeedForward = collections.namedtuple(
-    'ActorOutputFeedForward', 'level_name env_outputs agent_outputs')
+    'ActorOutputFeedForward', 'level_name level_id env_outputs agent_outputs')
 
 
 # Used to map the level name -> number for indexation
@@ -185,12 +185,13 @@ def build_actor(agent, env, level_name, action_set):
     
     output = ActorOutputFeedForward(
         level_name=level_name, 
+        level_id=game_id[level_name],
         env_outputs=full_env_outputs,
         agent_outputs=full_agent_outputs)
     # No backpropagation should be done here.
     return nest.map_structure(tf.stop_gradient, output)
 
-def build_learner(agent, env_outputs, agent_outputs, env_id):
+def build_learner(agent, env_outputs, agent_outputs, level_name):
   """Builds the learner loop.
 
   Args:
@@ -209,12 +210,12 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
 
   # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
   def get_single_game_info(_tuple):
-    single_env_id, game_info = _tuple
-    return game_info[single_env_id]
+    single_level_name, game_info = _tuple
+    return game_info[single_level_name]
 
   # Retrieve the specific games in the current batch. 
   def get_batch_value(batch):
-    return tf.map_fn(get_single_game_info, (env_id, batch), dtype=tf.float32)
+    return tf.map_fn(get_single_game_info, (level_name, batch), dtype=tf.float32)
 
   learner_outputs = agent.unroll(agent_outputs.action, env_outputs)
   un_normalized_vf = learner_outputs.un_normalized_vf
@@ -249,8 +250,8 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
     clipped_rewards = tf.where(rewards < 0, .3 * squeezed, squeezed) * 5.
 
   discounts = tf.to_float(~done) * FLAGS.discounting
-  game_specific_mean = tf.gather(agent._mean, env_id)
-  game_specific_std = tf.gather(agent._std, env_id)
+  game_specific_mean = tf.gather(agent._mean, level_name)
+  game_specific_std = tf.gather(agent._std, level_name)
 
   # Compute V-trace returns and weights.
   # Note, this is put on the CPU because it's faster than on GPU. It can be
@@ -317,11 +318,11 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
   with tf.device('/cpu'):
-    (mean, std) = (agent.update_moments(vtrace_returns.vs, env_id))
+    (mean, std) = (agent.update_moments(vtrace_returns.vs, level_name))
   return (done, infos, num_env_frames_and_train) + (mean, std)
 
 
-def create_atari_environment(env_id, seed, is_test=False):
+def create_atari_environment(level_name, seed, is_test=False):
 
   config = {
       'width': FLAGS.width,
@@ -334,7 +335,7 @@ def create_atari_environment(env_id, seed, is_test=False):
     # https://github.com/deepmind/lab/blob/master/docs/users/python_api.md
     config['mixerSeed'] = 0x600D5EED
 
-  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id, config)
+  process = py_process.PyProcess(atari_environment.PyProcessAtari, level_name, config)
   proxy_env = atari_environment.FlowEnvironment(process.proxy)
   return proxy_env
 
@@ -474,8 +475,9 @@ def train(action_set, level_names):
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
         # Converting the tensor of level names to a normal integer used for indexing. 
-        level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
-        level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+        # level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
+        # level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+        level_names_index = data_from_actors.level_id
 
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent,
