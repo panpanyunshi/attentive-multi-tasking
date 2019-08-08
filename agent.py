@@ -16,8 +16,8 @@ import self_attention
 FLAGS = tf.app.flags.FLAGS
 
 nest = tf.contrib.framework.nest
-PopArtAgentOutput = collections.namedtuple('AgentOutput',
-                                    'action policy_logits un_normalized_vf normalized_vf')
+AgentOutput2 = collections.namedtuple('AgentOutput2',
+                                    'action policy_logits un_normalized_baseline baseline')
 ImpalaAgentOutput = collections.namedtuple('AgentOutput',
                                              'action policy_logits baseline')                       
                                              
@@ -183,8 +183,8 @@ class PopArtSubnet(snt.AbstractModule):
         conv_out = tf.nn.relu(conv_out)
 
         if self.use_conv_attention:
-          conv_attention = snt.Conv2D(1, 3, stride=1)(conv_out)
-          weight = tf.keras.layers.GlobalAveragePooling2D()(conv_attention)
+          # conv_attention = snt.Conv2D(1, 3, stride=1)(conv_out)
+          weight = tf.keras.layers.GlobalAveragePooling2D()(conv_out)
           weight = snt.Linear(1, name='weights')(tf.concat([weight, tau], axis=1))
         else:
           temp_flatten = snt.BatchFlatten()(conv_out)
@@ -213,19 +213,23 @@ class PopArtSubnet(snt.AbstractModule):
 
   def _head(self, core_output):
     core_output, level_name = core_output
-    baseline_games = snt.Linear(self._number_of_games)(core_output)
+    baseline_games = snt.Linear(self._number_of_games, name='baseline')(core_output)
+    un_normalized_vf = baseline_games * self._std + self._mean
     # adding time dimension
     level_name     = tf.reshape(level_name, [-1, 1, 1])
     # Reshaping as to seperate the time and batch dimensions
     # We need to know the length of the time dimension, because it may differ in the initialization
     # E.g the learner and actors have different size batch/time dimension
     baseline_games = tf.reshape(baseline_games, [tf.shape(level_name)[0], -1, self._number_of_games])
+    un_normalized_vf = tf.reshape(un_normalized_vf, [tf.shape(level_name)[0], -1, self._number_of_games])
 
     # Tile the time dimension 
     level_name = tf.tile(level_name, [1, tf.shape(baseline_games)[1], 1])
     baseline   = tf.batch_gather(baseline_games, level_name)    # (batch_size, time, 1)
+    un_normalized_baseline = tf.batch_gather(un_normalized_vf, level_name)
     # Reshape to the batch size - because Sonnet's BatchApply expects a batch_size * time dimension. 
     baseline   = tf.reshape(baseline, [tf.shape(core_output)[0]])
+    un_normalized_baseline = tf.reshape(un_normalized_baseline, [tf.shape(core_output)[0]])
     
     # Sample an action from the policy.
     policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output) 
@@ -233,7 +237,7 @@ class PopArtSubnet(snt.AbstractModule):
                                        dtype=tf.int32)
     new_action = tf.squeeze(new_action, 1, name='new_action')
 
-    return PopArtAgentOutput(new_action, policy_logits, baseline)
+    return AgentOutput2(new_action, policy_logits, un_normalized_baseline, baseline)
 
   def _build(self, input_):
     action, env_output, level_name = input_
@@ -271,10 +275,11 @@ class PopArtSubnet(snt.AbstractModule):
 
     # The batch may contain different games, so we need to ensure that 
     # the vtrace corrected value estimate matches the current game. 
-    def update_batch(mm, gvt):
-        return tf.foldl(update_step, (gvt, env_id), initializer=mm)
+    # def update_batch(mm, gvt):
+    #     return tf.foldl(update_step, (gvt, env_id), initializer=mm)
 
-    new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
+    new_mean, new_mean_squared = tf.foldl(update_step, (tf.reduce_mean(vs, axis=0), env_id), initializer=(self._mean, self._mean_squared))
+    # new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
     new_std = tf.sqrt(new_mean_squared - tf.square(new_mean))
     new_std = tf.clip_by_value(new_std, self._epsilon, 1e6)
 

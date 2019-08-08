@@ -194,6 +194,7 @@ def build_actor(agent, env, level_name, action_set):
         env_outputs=full_env_outputs,
         agent_outputs=full_agent_outputs)
     # No backpropagation should be done here.
+
     return nest.map_structure(tf.stop_gradient, output)
 
 def build_learner(agent, env_outputs, agent_outputs, level_name):
@@ -212,28 +213,28 @@ def build_learner(agent, env_outputs, agent_outputs, level_name):
   """
 
   # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
-  def get_single_game_info(_tuple):
-    single_level_name, game_info = _tuple
-    return game_info[single_level_name]
+  # def get_single_game_info(_tuple):
+  #   single_level_name, game_info = _tuple
+  #   return game_info[single_level_name]
 
-  # Retrieve the specific games in the current batch. 
-  def get_batch_value(batch):
-    return tf.map_fn(get_single_game_info, (level_name, batch), dtype=tf.float32)
+  # # Retrieve the specific games in the current batch. 
+  # def get_batch_value(batch):
+  #   return tf.map_fn(get_single_game_info, (level_name, batch), dtype=tf.float32)
 
-  learner_outputs = agent.unroll(agent_outputs.action, env_outputs)
-  un_normalized_vf = learner_outputs.un_normalized_vf
-  normalized_vf   = learner_outputs.normalized_vf
+  learner_outputs = agent.unroll(agent_outputs.action, env_outputs, level_name)
+  un_normalized_vf = learner_outputs.un_normalized_baseline
+  normalized_vf   = learner_outputs.baseline
 
-  game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
-  # game_specific_un_normalized_vf = tf.reduce_sum(game)
-  game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
+  # game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
+  # # game_specific_un_normalized_vf = tf.reduce_sum(game)
+  # game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
 
   # Ensure the learner separates the value functions for each game. 
   # According to equation (10) in (Hessel et al., 2018). 
-  learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
-                                             normalized_vf=game_specific_normalized_vf) 
+  # learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
+  #                                            normalized_vf=game_specific_normalized_vf) 
   # Use last baseline value (from the value function) to bootstrap.
-  bootstrap_value = learner_outputs.un_normalized_vf[-1]
+  bootstrap_value = learner_outputs.un_normalized_baseline[-1]
  
   # At this point, the environment outputs at time step `t` are the inputs that
   # lead to the learner_outputs at time step `t`. After the following shifting,
@@ -265,8 +266,8 @@ def build_learner(agent, env_outputs, agent_outputs, level_name):
         actions=agent_outputs.action,
         discounts=discounts,
         rewards=clipped_rewards,
-        un_normalized_values=learner_outputs.un_normalized_vf,
-        normalized_values=learner_outputs.normalized_vf,
+        un_normalized_values=learner_outputs.un_normalized_baseline,
+        normalized_values=learner_outputs.baseline,
         mean=game_specific_mean,
         std=game_specific_std,
         bootstrap_value=bootstrap_value)
@@ -282,7 +283,7 @@ def build_learner(agent, env_outputs, agent_outputs, level_name):
       vtrace_returns.pg_advantages)
 
   baseline_loss = compute_baseline_loss(
-       normalized_vtrace - learner_outputs.normalized_vf)
+       normalized_vtrace - learner_outputs.baseline)
   # Using the average GvT 
   # baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
 
@@ -335,7 +336,7 @@ def create_atari_environment(level_name, seed, is_test=False):
     # https://github.com/deepmind/lab/blob/master/docs/users/python_api.md
     config['mixerSeed'] = 0x600D5EED
 
-  process = py_process.PyProcess(atari_environment.PyProcessAtari, level_name, config)
+  process = py_process.PyProcess(atari_environment.PyProcessAtari, level_name, config, seed)
   proxy_env = atari_environment.FlowEnvironment(process.proxy)
   return proxy_env
 
