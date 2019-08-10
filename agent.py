@@ -144,7 +144,7 @@ class PopArtFeedForward(snt.AbstractModule):
         self._epsilon      = 1e-4
 
     def _torso(self, input_):
-        last_action, env_output = input_
+        last_action, env_output, level_name = input_
         reward, _, _, frame = env_output
 
         # Convert to floats.
@@ -153,7 +153,7 @@ class PopArtFeedForward(snt.AbstractModule):
 
         # Matching PNN's architecture       
         with tf.variable_scope('convnet'):
-            conv_out = res_net_convolution(frame)
+            conv_out = shallow_convolution(frame)
 
         conv_out = tf.nn.relu(conv_out)
         conv_out = snt.BatchFlatten()(conv_out)
@@ -167,48 +167,50 @@ class PopArtFeedForward(snt.AbstractModule):
         return output
 
     def _head(self, torso_output):
-
-        policy_logits = snt.Linear(self._num_actions, name='policy_logits')(torso_output)
-        linear = snt.Linear(self._number_of_games, name='baseline')
-        normalized_vf  = linear(torso_output)
-
-        un_normalized_vf = self._std * normalized_vf + self._mean
-
+        torso_output, level_name = torso_output
+        normalized_vf_games = snt.Linear(self._number_of_games, name='baseline')(torso_output)
+        print("normalized_vf1: ", normalized_vf_games)
+        un_normalized_vf_games = self._std * normalized_vf_games + self._mean
+        level_name     = tf.reshape(level_name, [-1, 1, 1])
+        # Reshaping as to seperate the time and batch dimensions
+        # We need to know the length of the time dimension, because it may differ in the initialization
+        # E.g the learner and actors have different size batch/time dimension
         # Sample an action from the policy.
-        new_action = tf.multinomial(policy_logits, num_samples=1,
-                                    output_dtype=tf.int32)
-        new_action = tf.squeeze(new_action, [1], name='new_action')
-
-        return AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf) 
+        
+        normalized_vf    = tf.reshape(normalized_vf_games, [tf.shape(level_name)[0], -1, self._number_of_games])
+        un_normalized_vf = tf.reshape(un_normalized_vf_games, [tf.shape(level_name)[0], -1, self._number_of_games])
+        level_name = tf.tile(level_name, [1, tf.shape(normalized_vf_games)[1], 1])
+        print("normalized: ", normalized_vf)
+        print("LEVEL NAME: ", level_name)
+        normalized   = tf.batch_gather(normalized_vf, level_name)    # (batch_size, time, 1)
+        un_normalized   = tf.batch_gather(un_normalized_vf, level_name)    # (batch_size, time, 1)
+        # Reshape to the batch size - because Sonnet's BatchApply expects a batch_size * time dimension. 
+        normalized_vf = tf.reshape(normalized, [tf.shape(torso_output)[0]])
+        un_normalized_vf = tf.reshape(un_normalized, [tf.shape(torso_output)[0]])
+        
+        policy_logits = snt.Linear(self._num_actions, name='policy_logits')(torso_output)
+        new_action = tf.random.categorical(policy_logits, num_samples=1, 
+                                          dtype=tf.int32)
+        new_action = tf.squeeze(new_action, 1, name='new_action')
+        return AgentOutput(new_action, policy_logits, un_normalized, normalized) 
 
     def _build(self, input_):
-        action, env_output = input_
+        action, env_output, level_name = input_
         actions, env_outputs = nest.map_structure(lambda t: tf.expand_dims(t, 0),
                                                 (action, env_output))
-        outputs = self.unroll(actions, env_outputs)
+        outputs = self.unroll(actions, env_outputs, level_name)
         squeezed = nest.map_structure(lambda t: tf.squeeze(t, 0), outputs)
         return squeezed
 
     @snt.reuse_variables
-    def unroll(self, actions, env_outputs):
+    def unroll(self, actions, env_outputs, level_name):
         # _, _, done, _ = env_outputs
-        torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs))
-        output = snt.BatchApply(self._head, name='batch_apply_unroll')(tf.stack(torso_outputs))
+        torso_outputs = snt.BatchApply(self._torso)((actions, env_outputs, level_name))
+        output = snt.BatchApply(self._head, name='batch_apply_unroll')((torso_outputs, level_name))
         return output
     
     def update_moments(self, vs, env_id):
-        """
-        This function computes the adaptive normalization statistics for the actor and critic updates
-        while preserving the outputs (PopArt) according to (Hessel et al., 2018). 
-        https://arxiv.org/abs/1809.04474
 
-        Args: 
-            vs:     Vtrace corrected value estimates. 
-            env_id: single game id. Used to pair the value function and specific game. 
-
-        Returns:
-            A tuple of the updated first and second moments. 
-        """
         with tf.variable_scope("popart_feed_forward/batch_apply_unroll/baseline", reuse=True):
             weight = tf.get_variable("w")
             bias = tf.get_variable("b")
@@ -230,12 +232,10 @@ class PopArtFeedForward(snt.AbstractModule):
 
         # The batch may contain different games, so we need to ensure that 
         # the vtrace corrected value estimate matches the current game. 
-        def update_batch(mm, gvt):
-            print("gvt: ", gvt)
-            print("env id: ", env_id)
-            return tf.foldl(update_step, (gvt, env_id), initializer=mm)
-        print("vs: ", vs)
-        new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
+        # def update_batch(mm, gvt):
+        #     return tf.foldl(update_step, (gvt, env_id), initializer=mm)
+
+        new_mean, new_mean_squared = tf.foldl(update_step, (tf.reduce_mean(vs, axis=0), env_id), initializer=(self._mean, self._mean_squared))
         new_std = tf.sqrt(new_mean_squared - tf.square(new_mean))
         new_std = tf.clip_by_value(new_std, self._epsilon, 1e6)
 

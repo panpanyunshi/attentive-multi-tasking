@@ -58,6 +58,7 @@ flags.DEFINE_integer('seed', 1, 'Random seed.')
 flags.DEFINE_integer('queue_capacity', 1, 'tensorflow queue capacity')
 flags.DEFINE_string('level_name', 'SeaquestNoFrameskip-v4', 'level name')
 flags.DEFINE_string('agent_name', 'FeedForwardAgent', 'Which learner to use')
+flags.DEFINE_integer('multi_task', 1, 'Training on multiple games')
 
 # Loss settings.
 flags.DEFINE_float('entropy_cost', 0.01, 'Entropy cost/multiplier.')
@@ -118,7 +119,9 @@ def build_actor(agent, env, level_name, action_set):
   # initial_agent_state = agent.initial_state(1)
 
   initial_action = tf.zeros([1], dtype=tf.int32)
-  dummy_agent_output = agent((initial_action, nest.map_structure(lambda t: tf.expand_dims(t, 0), initial_env_output)))
+  dummy_agent_output = agent((initial_action, 
+                              nest.map_structure(lambda t: tf.expand_dims(t, 0), initial_env_output),
+                              tf.constant(game_id[level_name], shape=[1])))
   initial_agent_output = nest.map_structure(
       lambda t: tf.zeros(t.shape, t.dtype), dummy_agent_output)
 
@@ -141,7 +144,7 @@ def build_actor(agent, env, level_name, action_set):
     action = agent_output[0]
     batched_env_output = nest.map_structure(lambda t: tf.expand_dims(t, 0),
                                             env_output)
-    agent_output = agent((action, batched_env_output))
+    agent_output = agent((action, batched_env_output, tf.constant(game_id[level_name], shape=[1])))
 
     # Convert action index to the native action.
     action = agent_output[0][0]
@@ -185,9 +188,11 @@ def build_actor(agent, env, level_name, action_set):
     
     output = ActorOutputFeedForward(
         level_name=level_name, 
+        level_id=game_id[level_name],
         env_outputs=full_env_outputs,
         agent_outputs=full_agent_outputs)
     # No backpropagation should be done here.
+
     return nest.map_structure(tf.stop_gradient, output)
 
 def build_learner(agent, env_outputs, agent_outputs, env_id):
@@ -207,30 +212,29 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
     the environment frames tensor causes an update.
   """
 
-  # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
-  def get_single_game_info(_tuple):
-    single_env_id, game_info = _tuple
-    return game_info[single_env_id]
+    # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
+  # def get_single_game_info(_tuple):
+  #   single_level_name, game_info = _tuple
+  #   return game_info[single_level_name]
 
-  # Retrieve the specific games in the current batch. 
-  def get_batch_value(batch):
-    return tf.map_fn(get_single_game_info, (env_id, batch), dtype=tf.float32)
+  # # Retrieve the specific games in the current batch. 
+  # def get_batch_value(batch):
+  #   return tf.map_fn(get_single_game_info, (level_name, batch), dtype=tf.float32)
 
-  learner_outputs = agent.unroll(agent_outputs.action, env_outputs)
-  un_normalized_vf = learner_outputs.un_normalized_vf
-  normalized_vf   = learner_outputs.normalized_vf
-  
+  learner_outputs = agent.unroll(agent_outputs.action, env_outputs, env_id)
+  un_normalized_vf = learner_outputs.un_normalized_baseline
+  normalized_vf   = learner_outputs.baseline
 
-  game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
-  # game_specific_un_normalized_vf = tf.reduce_sum(game)
-  game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
+  # game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
+  # # game_specific_un_normalized_vf = tf.reduce_sum(game)
+  # game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
 
   # Ensure the learner separates the value functions for each game. 
   # According to equation (10) in (Hessel et al., 2018). 
-  learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
-                                             normalized_vf=game_specific_normalized_vf) 
+  # learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
+  #                                            normalized_vf=game_specific_normalized_vf) 
   # Use last baseline value (from the value function) to bootstrap.
-  bootstrap_value = learner_outputs.un_normalized_vf[-1]
+  bootstrap_value = learner_outputs.un_normalized_baseline[-1]
  
   # At this point, the environment outputs at time step `t` are the inputs that
   # lead to the learner_outputs at time step `t`. After the following shifting,
@@ -282,8 +286,6 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
 
   baseline_loss = compute_baseline_loss(
        normalized_vtrace - learner_outputs.normalized_vf)
-  # Using the average GvT 
-  # baseline_loss = tf.divide(baseline_loss, FLAGS.unroll_length)
 
   total_loss += FLAGS.baseline_cost * baseline_loss
   total_loss += FLAGS.entropy_cost * compute_entropy_loss(
@@ -317,8 +319,8 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
   tf.summary.scalar('total_loss', total_loss)
   tf.summary.histogram('action', agent_outputs.action)
   with tf.device('/cpu'):
-    (mean, std) = (agent.update_moments(vtrace_returns.vs, env_id))
-  return (done, infos, num_env_frames_and_train) + (mean, std)
+    (mean, mean_squared) = (agent.update_moments(vtrace_returns.vs, env_id))
+  return (done, infos, num_env_frames_and_train) + (mean, mean_squared)
 
 
 def create_atari_environment(env_id, seed, is_test=False):
@@ -334,7 +336,7 @@ def create_atari_environment(env_id, seed, is_test=False):
     # https://github.com/deepmind/lab/blob/master/docs/users/python_api.md
     config['mixerSeed'] = 0x600D5EED
 
-  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id, config)
+  process = py_process.PyProcess(atari_environment.PyProcessAtari, env_id, config, seed)
   proxy_env = atari_environment.FlowEnvironment(process.proxy)
   return proxy_env
 
@@ -474,9 +476,9 @@ def train(action_set, level_names):
         data_from_actors = nest.pack_sequence_as(structure, area.get())
 
         # Converting the tensor of level names to a normal integer used for indexing. 
-        level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
-        level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
-
+        # level_names_index = tf.map_fn(lambda y: tf.py_function(lambda x: game_id[x.numpy()], [y], Tout=tf.int32), data_from_actors.level_name, dtype=tf.int32)
+        # level_names_index = tf.reshape(level_names_index, [FLAGS.batch_size])
+        level_names_index = data_from_actors.level_id
         # Unroll agent on sequence, create losses and update ops.
         output = build_learner(agent,
                                data_from_actors.env_outputs,
@@ -610,14 +612,20 @@ def test(action_set, level_names):
   tf.logging.info('No cap.: %f Cap 100: %f', no_cap, cap_100)
 
 def main(_):
-    tf.logging.set_verbosity(tf.logging.INFO)
-    # action_set = atari_environment.ATARI_ACTION_SET
-    test_action_set = atari_environment.get_action_set(FLAGS.level_name)
-    action_set = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15 ,16, 17]
-    if FLAGS.mode == 'train':
-      train(action_set, games) 
-    else:
-      test(test_action_set, [FLAGS.level_name])
+  tf.logging.set_verbosity(tf.logging.INFO)
+  action_set = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 ,15 ,16, 17] 
+  if FLAGS.multi_task == 1 and FLAGS.mode == 'train':
+    level_names = utilities_atari.ATARI_GAMES.keys()
+  elif FLAGS.multi_task == 1 and FLAGS.mode == 'test':
+    level_names = utilities_atari.ATARI_GAMES.values()
+  else:
+    level_names = [FLAGS.level_name]
+    action_set = atari_environment.get_action_set(FLAGS.level_name)
+
+  if FLAGS.mode == 'train':
+    train(action_set, level_names)
+  else:
+    test(action_set, level_names)
 
 if __name__ == '__main__':
     tf.app.run()    
