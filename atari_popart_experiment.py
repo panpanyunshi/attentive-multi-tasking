@@ -79,7 +79,7 @@ ActorOutput = collections.namedtuple(
     'ActorOutput', 'level_name agent_state env_outputs agent_outputs')
 
 ActorOutputFeedForward = collections.namedtuple(
-    'ActorOutputFeedForward', 'level_name env_outputs agent_outputs')
+    'ActorOutputFeedForward', 'level_name level_id env_outputs agent_outputs')
 
 
 # Used to map the level name -> number for indexation
@@ -212,29 +212,10 @@ def build_learner(agent, env_outputs, agent_outputs, env_id):
     the environment frames tensor causes an update.
   """
 
-    # Need to map the game name, e.g 'BreakoutNoFrameSkip-v4' to an integer.  
-  # def get_single_game_info(_tuple):
-  #   single_level_name, game_info = _tuple
-  #   return game_info[single_level_name]
-
-  # # Retrieve the specific games in the current batch. 
-  # def get_batch_value(batch):
-  #   return tf.map_fn(get_single_game_info, (level_name, batch), dtype=tf.float32)
-
   learner_outputs = agent.unroll(agent_outputs.action, env_outputs, env_id)
-  un_normalized_vf = learner_outputs.un_normalized_baseline
-  normalized_vf   = learner_outputs.baseline
 
-  # game_specific_un_normalized_vf = tf.map_fn(get_batch_value, un_normalized_vf, dtype=tf.float32)
-  # # game_specific_un_normalized_vf = tf.reduce_sum(game)
-  # game_specific_normalized_vf   = tf.map_fn(get_batch_value, normalized_vf, dtype=tf.float32)
-
-  # Ensure the learner separates the value functions for each game. 
-  # According to equation (10) in (Hessel et al., 2018). 
-  # learner_outputs = learner_outputs._replace(un_normalized_vf=game_specific_un_normalized_vf,
-  #                                            normalized_vf=game_specific_normalized_vf) 
   # Use last baseline value (from the value function) to bootstrap.
-  bootstrap_value = learner_outputs.un_normalized_baseline[-1]
+  bootstrap_value = learner_outputs.un_normalized_vf[-1]
  
   # At this point, the environment outputs at time step `t` are the inputs that
   # lead to the learner_outputs at time step `t`. After the following shifting,
@@ -537,9 +518,9 @@ def train(action_set, level_names):
                               simple_value=episode_return)
             summary.value.add(tag=level_name + '/episode_frames',
                               simple_value=episode_frames)
-            summary.value.add(tag=level_name + '/total_episode_return',
+            summary.value.add(tag=level_name + '/acc_episode_return',
                                 simple_value=acc_episode_reward)
-            summary.value.add(tag=level_name + '/total_episode_frames',
+            summary.value.add(tag=level_name + '/acc_episode_frames',
                                 simple_value=acc_episode_step)
             # summary.value.add(tag=level_name + '/game_mean', 
             #                   simple_value=mean[game_id[level_name]])
@@ -549,7 +530,7 @@ def train(action_set, level_names):
 
             level_returns[level_name].append(episode_return)
 
-          if min(map(len, level_returns.values())) >= 1:
+          if min(map(len, level_returns.values())) >= 1 and FLAGS.multi_task == 1:
             no_cap = utilities_atari.compute_human_normalized_score(level_returns,
                                                             per_level_cap=None)
             cap_100 = utilities_atari.compute_human_normalized_score(level_returns,

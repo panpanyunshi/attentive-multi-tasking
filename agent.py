@@ -168,31 +168,29 @@ class PopArtFeedForward(snt.AbstractModule):
 
     def _head(self, torso_output):
         torso_output, level_name = torso_output
-        normalized_vf_games = snt.Linear(self._number_of_games, name='baseline')(torso_output)
-        print("normalized_vf1: ", normalized_vf_games)
+        normalized_vf_games    = snt.Linear(self._number_of_games, name='baseline')(torso_output)
         un_normalized_vf_games = self._std * normalized_vf_games + self._mean
         level_name     = tf.reshape(level_name, [-1, 1, 1])
+
         # Reshaping as to seperate the time and batch dimensions
         # We need to know the length of the time dimension, because it may differ in the initialization
         # E.g the learner and actors have different size batch/time dimension
         # Sample an action from the policy.
-        
         normalized_vf    = tf.reshape(normalized_vf_games, [tf.shape(level_name)[0], -1, self._number_of_games])
         un_normalized_vf = tf.reshape(un_normalized_vf_games, [tf.shape(level_name)[0], -1, self._number_of_games])
-        level_name = tf.tile(level_name, [1, tf.shape(normalized_vf_games)[1], 1])
-        print("normalized: ", normalized_vf)
-        print("LEVEL NAME: ", level_name)
-        normalized   = tf.batch_gather(normalized_vf, level_name)    # (batch_size, time, 1)
-        un_normalized   = tf.batch_gather(un_normalized_vf, level_name)    # (batch_size, time, 1)
+        
+        level_name       = tf.tile(level_name, [1, tf.shape(normalized_vf)[1], 1])
+        normalized_vf    = tf.batch_gather(normalized_vf, level_name)    # (batch_size, time, 1)
+        un_normalized_vf = tf.batch_gather(un_normalized_vf, level_name)    # (batch_size, time, 1)
         # Reshape to the batch size - because Sonnet's BatchApply expects a batch_size * time dimension. 
-        normalized_vf = tf.reshape(normalized, [tf.shape(torso_output)[0]])
-        un_normalized_vf = tf.reshape(un_normalized, [tf.shape(torso_output)[0]])
+        normalized_vf    = tf.reshape(normalized_vf, [tf.shape(torso_output)[0]])
+        un_normalized_vf = tf.reshape(un_normalized_vf, [tf.shape(torso_output)[0]])
         
         policy_logits = snt.Linear(self._num_actions, name='policy_logits')(torso_output)
         new_action = tf.random.categorical(policy_logits, num_samples=1, 
                                           dtype=tf.int32)
         new_action = tf.squeeze(new_action, 1, name='new_action')
-        return AgentOutput(new_action, policy_logits, un_normalized, normalized) 
+        return AgentOutput(new_action, policy_logits, un_normalized_vf, normalized_vf) 
 
     def _build(self, input_):
         action, env_output, level_name = input_
