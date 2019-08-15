@@ -88,20 +88,25 @@ class ImpalaSubnet(snt.AbstractModule):
 
   def _head(self, core_output):
     core_output, level_name = core_output
-    baseline_games = snt.Linear(self._number_of_games)(core_output)
+    # Using a shared value function first.
+    # baseline_games = snt.Linear(1)(core_output)
+    # Then multiple value functions to account for the different scalings of rewards in different games.   
+    # baseline_games = snt.Linear(self._number_of_games)(core_output)
+    baseline = tf.squeeze(snt.Linear(1, name='baseline')(core_output), axis=-1)
+  
     # adding time dimension
-    level_name     = tf.reshape(level_name, [-1, 1, 1])
+    # level_name     = tf.reshape(level_name, [-1, 1, 1])
     # Reshaping as to seperate the time and batch dimensions
     # We need to know the length of the time dimension, because it may differ in the initialization
     # E.g the learner and actors have different size batch/time dimension
-    baseline_games = tf.reshape(baseline_games, [tf.shape(level_name)[0], -1, self._number_of_games])
+    # baseline_games = tf.reshape(baseline_games, [tf.shape(level_name)[0], -1, self._number_of_games])
 
     # Tile the time dimension 
-    level_name = tf.tile(level_name, [1, tf.shape(baseline_games)[1], 1])
-    baseline   = tf.batch_gather(baseline_games, level_name)    # (batch_size, time, 1)
+    # level_name = tf.tile(level_name, [1, tf.shape(baseline_games)[1], 1])
+    # baseline   = tf.batch_gather(baseline_games, level_name)    # (batch_size, time, 1)
     # Reshape to the batch size - because Sonnet's BatchApply expects a batch_size * time dimension. 
-    baseline   = tf.reshape(baseline, [tf.shape(core_output)[0]])
-    
+    # baseline   = tf.reshape(baseline, [tf.shape(core_output)[0]])
+
     # Sample an action from the policy.
     policy_logits = snt.Linear(self._num_actions, name='policy_logits')(core_output) 
     new_action = tf.random.categorical(policy_logits, num_samples=1, 
