@@ -453,9 +453,10 @@ def train(action_set, level_names):
         
     # Create MonitoredSession (to run the graph, checkpoint and log).
     tf.logging.info('Creating MonitoredSession, is_chief %s', is_learner)
-    config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters) 
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.333)
+    config = tf.ConfigProto(allow_soft_placement=True, device_filters=filters, gpu_options=gpu_options) 
     config.gpu_options.allow_growth = True
-    # config.gpu_options.per_process_gpu_memory_fraction = 0.8
+    # config.gpu_options.per_process_gpu_memory_fraction = 0.3
     logdir = FLAGS.logdir
     with tf.train.MonitoredTrainingSession(
         server.target,
