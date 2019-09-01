@@ -230,10 +230,10 @@ class PopArtFeedForward(snt.AbstractModule):
 
         # The batch may contain different games, so we need to ensure that 
         # the vtrace corrected value estimate matches the current game. 
-        # def update_batch(mm, gvt):
-        #     return tf.foldl(update_step, (gvt, env_id), initializer=mm)
+        def update_batch(mm, gvt):
+            return tf.foldl(update_step, (gvt, env_id), initializer=mm)
 
-        new_mean, new_mean_squared = tf.foldl(update_step, (tf.reduce_mean(vs, axis=0), env_id), initializer=(self._mean, self._mean_squared))
+        new_mean, new_mean_squared = tf.foldl(update_batch, vs, initializer=(self._mean, self._mean_squared))
         new_std = tf.sqrt(new_mean_squared - tf.square(new_mean))
         new_std = tf.clip_by_value(new_std, self._epsilon, 1e6)
 
