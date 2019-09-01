@@ -48,11 +48,11 @@ flags.DEFINE_integer('width', 84, 'Width of observation')
 flags.DEFINE_integer('height', 84, 'Height of observation')
 
 # Train settings
-flags.DEFINE_integer('total_environment_frames', int(5e8),
+flags.DEFINE_integer('total_environment_frames', int(6e8),
                      'Total environment frames to train for.')
 flags.DEFINE_integer('num_actors', 10, 'Number of actors.')
 flags.DEFINE_integer('batch_size', 1, 'Batch size for training.')
-flags.DEFINE_integer('unroll_length', 80, 'Unroll length in agent steps.')
+flags.DEFINE_integer('unroll_length', 20, 'Unroll length in agent steps.')
 flags.DEFINE_integer('num_action_repeats', 4, 'Number of action repeats.')
 flags.DEFINE_integer('seed', 1, 'Random seed.')
 flags.DEFINE_integer('queue_capacity', 1, 'tensorflow queue capacity')
